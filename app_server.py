@@ -233,7 +233,7 @@ class ClientServiceServicer(
             try:
 
                 analytics = (
-                    self._get_llm_analytics()
+                    self._get_llm_inventory_analytics()
                 )
 
                 return inventory_pb2.GetResponse(
@@ -510,51 +510,36 @@ class ClientServiceServicer(
 
     def _get_llm_reorder_suggestions(self):
         """
-        Get the validated demand forecast, then ask the LLM
-        whether each item needs to be reordered.
+        Generate reorder suggestions.
+
+        The LLM provides qualitative reasoning.
+        The application server calculates the actual reorder decision
+        and quantity from stock + forecast.
         """
 
+        # First obtain the authoritative demand forecasts.
         forecasts = self._get_llm_demand_forecast()
 
-        products = database.get_all_products()
+        # Build deterministic inventory facts.
+        inventory_facts = self._build_inventory_facts(
+            forecasts
+        )
 
-        stock_by_item = {
-            product["item_id"]: product
-            for product in products
-        }
-
-        reorder_input = []
-
-        for forecast in forecasts:
-
-            item_id = forecast["item_id"]
-
-            if item_id not in stock_by_item:
-                raise ValueError(
-                    f"Product {item_id} not found in database."
-                )
-
-            current_stock = stock_by_item[item_id]["stock"]
-
-            reorder_input.append({
-                "item_id": item_id,
-                "product_name": forecast["product_name"],
-                "current_stock": current_stock,
-                "predicted_7_day_demand": (
-                    forecast["predicted_7_day_demand"]
-                ),
-            })
+        # ----------------------------------------------------
+        # Send inventory facts to the LLM for explanation
+        # ----------------------------------------------------
 
         context_data = json.dumps(
-            reorder_input,
+            inventory_facts,
             indent=2,
         )
 
         request_id = str(uuid.uuid4())
 
         print(
-            f"[LLM Routing] Reorder suggestion "
-            f"-> Node 1 | request_id={request_id}"
+            "[LLM Routing] Reorder suggestions "
+            "-> Node 1 | "
+            f"request_id={request_id}"
         )
 
         response = self.llm_stub.getLLMAnswer(
@@ -568,12 +553,16 @@ class ClientServiceServicer(
 
         try:
             result = json.loads(response.answer)
+
         except json.JSONDecodeError as exc:
             raise ValueError(
-                f"LLM returned invalid JSON: {response.answer}"
+                "LLM returned invalid JSON for reorder suggestions: "
+                + response.answer
             ) from exc
 
-        recommendations = result.get("recommendations")
+        recommendations = result.get(
+            "recommendations"
+        )
 
         if not isinstance(recommendations, list):
             raise ValueError(
@@ -581,169 +570,288 @@ class ClientServiceServicer(
                 "'recommendations' array."
             )
 
-        expected_ids = {
-            product["item_id"]
-            for product in reorder_input
-        }
-
-        returned_ids = set()
-        final_recommendations = []
+        # Create quick lookup for LLM reasoning.
+        llm_by_id = {}
 
         for recommendation in recommendations:
 
-            item_id = recommendation.get("item_id")
-
-            if item_id not in expected_ids:
-                raise ValueError(
-                    f"LLM returned unknown item: {item_id}"
-                )
-
-            if item_id in returned_ids:
-                raise ValueError(
-                    f"Duplicate reorder recommendation: {item_id}"
-                )
-
-            reorder = recommendation.get("reorder")
-
-            if not isinstance(reorder, bool):
-                raise ValueError(
-                    f"Invalid reorder value for {item_id}."
-                )
-
-            product = stock_by_item[item_id]
-
-            forecast = next(
-                item
-                for item in forecasts
-                if item["item_id"] == item_id
+            item_id = recommendation.get(
+                "item_id"
             )
 
-            current_stock = product["stock"]
-            predicted_demand = (
+            if item_id:
+                llm_by_id[item_id] = recommendation
+
+        # ----------------------------------------------------
+        # Build FINAL authoritative response
+        # ----------------------------------------------------
+
+        final_recommendations = []
+
+        for item in inventory_facts:
+
+            item_id = item["item_id"]
+
+            llm_recommendation = llm_by_id.get(
+                item_id,
+                {},
+            )
+
+            final_recommendations.append(
+                {
+                    "item_id": item_id,
+                    "product_name": item["product_name"],
+
+                    # ALWAYS use Python calculation.
+                    "reorder": item["reorder"],
+                    "reorder_quantity": item[
+                        "reorder_quantity"
+                    ],
+
+                    "current_stock": item[
+                        "current_stock"
+                    ],
+
+                    "predicted_7_day_demand": item[
+                        "predicted_7_day_demand"
+                    ],
+
+                    "stock_status": item[
+                        "stock_status"
+                    ],
+
+                    "trend": item["trend"],
+
+                    # LLM is responsible for explanation.
+                    "reason": llm_recommendation.get(
+                        "reason",
+                        (
+                            "Reorder decision calculated "
+                            "from current stock and "
+                            "predicted 7-day demand."
+                        ),
+                    ),
+                }
+            )
+
+        return {
+            "recommendations": final_recommendations
+        }
+
+    def _get_llm_inventory_analytics(self):
+        """
+        Generate inventory analytics.
+
+        Python owns all deterministic calculations:
+        - reorder
+        - reorder_quantity
+        - stock_status
+        - demand_direction
+
+        The LLM provides qualitative insights only.
+        """
+
+        # ----------------------------------------------------
+        # 1. Get demand forecasts
+        # ----------------------------------------------------
+
+        forecasts = self._get_llm_demand_forecast()
+
+        if not forecasts:
+            raise ValueError(
+                "No demand forecasts available for analytics."
+            )
+
+        # ----------------------------------------------------
+        # 2. Build authoritative product facts
+        # ----------------------------------------------------
+
+        products = database.get_products_with_history()
+
+        if not products:
+            raise ValueError(
+                "No products found in the database."
+            )
+
+        forecast_by_id = {
+            forecast["item_id"]: forecast
+            for forecast in forecasts
+        }
+
+        inventory_facts = []
+
+        for product in products:
+
+            item_id = product["item_id"]
+
+            if item_id not in forecast_by_id:
+                raise ValueError(
+                    f"Missing forecast for {item_id}"
+                )
+
+            forecast = forecast_by_id[item_id]
+
+            history = product["sales_history"]
+
+            if not history:
+                raise ValueError(
+                    f"No sales history for {item_id}"
+                )
+
+            recent_7 = history[-7:]
+
+            # ------------------------------------------------
+            # Authoritative numerical statistics
+            # ------------------------------------------------
+
+            historical_average = round(
+                sum(history) / len(history),
+                2,
+            )
+
+            recent_average = round(
+                sum(recent_7) / len(recent_7),
+                2,
+            )
+
+            current_stock = int(
+                product["current_stock"]
+            )
+
+            predicted_demand = int(
                 forecast["predicted_7_day_demand"]
             )
 
-            # Application server performs the arithmetic.
+            # ------------------------------------------------
+            # Authoritative business rules
+            # ------------------------------------------------
+
+            reorder = (
+                predicted_demand > current_stock
+            )
+
             reorder_quantity = max(
                 predicted_demand - current_stock,
                 0,
             )
 
-            # Make the final recommendation internally consistent.
-            expected_reorder = reorder_quantity > 0
-
-            final_recommendations.append({
-                "item_id": item_id,
-                "product_name": product["name"],
-                "current_stock": current_stock,
-                "predicted_7_day_demand": predicted_demand,
-                "reorder": expected_reorder,
-                "reorder_quantity": reorder_quantity,
-                "reason": str(
-                    recommendation.get("reason", "")
-                ),
-            })
-
-            returned_ids.add(item_id)
-
-        if returned_ids != expected_ids:
-
-            missing = expected_ids - returned_ids
-
-            raise ValueError(
-                "LLM did not return reorder decisions for: "
-                + ", ".join(sorted(missing))
-            )
-
-        return final_recommendations
-
-
-    def _get_llm_analytics(self):
-        """
-        Build a validated inventory snapshot using:
-        - current database stock
-        - LLM demand forecast
-        - LLM reorder decisions
-
-        Then ask Node 1 to summarize the overall inventory situation.
-        """
-
-        forecasts = self._get_llm_demand_forecast()
-
-        reorder_results = self._get_llm_reorder_suggestions()
-
-        products = database.get_all_products()
-
-        stock_by_item = {
-            product["item_id"]: product
-            for product in products
-        }
-
-        reorder_by_item = {
-            item["item_id"]: item
-            for item in reorder_results
-        }
-
-        analytics_products = []
-
-        for forecast in forecasts:
-
-            item_id = forecast["item_id"]
-
-            if item_id not in stock_by_item:
-                raise ValueError(
-                    f"Product {item_id} not found in database."
-                )
-
-            if item_id not in reorder_by_item:
-                raise ValueError(
-                    f"Missing reorder result for {item_id}."
-                )
-
-            product = stock_by_item[item_id]
-            reorder = reorder_by_item[item_id]
-
-            current_stock = product["stock"]
-            predicted_demand = (
-                forecast["predicted_7_day_demand"]
-            )
-
             stock_status = (
                 "LOW"
-                if current_stock < predicted_demand
+                if reorder
                 else "ADEQUATE"
             )
 
-            analytics_products.append(
+            # ------------------------------------------------
+            # Authoritative demand classification
+            # ------------------------------------------------
+            demand_direction = "STABLE"
+            if recent_average > historical_average * 1.10:
+
+                demand_direction = "INCREASING"
+
+            elif recent_average < historical_average * 0.90:
+
+                demand_direction = "DECREASING"
+
+            else:
+
+                demand_direction = "STABLE"
+
+            inventory_facts.append(
                 {
                     "item_id": item_id,
-                    "product_name": product["name"],
+                    "product_name": product["product_name"],
+
                     "current_stock": current_stock,
-                    "predicted_7_day_demand": predicted_demand,
-                    "trend": forecast["trend"],
-                    "reorder": reorder["reorder"],
-                    "reorder_quantity": reorder[
-                        "reorder_quantity"
-                    ],
-                    "stock_status": stock_status,
+
+                    "predicted_7_day_demand":
+                        predicted_demand,
+
+                    "historical_30_day_average":
+                        historical_average,
+
+                    "recent_7_day_average":
+                        recent_average,
+
+                    "demand_direction":
+                        demand_direction,
+
+                    "trend":
+                        forecast.get(
+                            "trend",
+                            "unknown",
+                        ),
+
+                    "reason":
+                        forecast.get(
+                            "reason",
+                            "",
+                        ),
+
+                    "reorder":
+                        reorder,
+
+                    "reorder_quantity":
+                        reorder_quantity,
+
+                    "stock_status":
+                        stock_status,
                 }
             )
 
-        analytics_context = {
-            "products": analytics_products
+        # ----------------------------------------------------
+        # 3. Send authoritative facts to LLM
+        # ----------------------------------------------------
+
+        llm_context = {
+            "products": inventory_facts,
+
+            "instructions": {
+                "role":
+                    "inventory analytics assistant",
+
+                "important":
+                    (
+                        "The numerical and inventory fields "
+                        "provided for each product are authoritative."
+                    ),
+
+                "do_not_modify": [
+                    "current_stock",
+                    "predicted_7_day_demand",
+                    "historical_30_day_average",
+                    "recent_7_day_average",
+                    "demand_direction",
+                    "reorder",
+                    "reorder_quantity",
+                    "stock_status",
+                ],
+
+                "task":
+                    (
+                        "Generate concise qualitative observations "
+                        "about demand patterns. Do not change or "
+                        "reinterpret the supplied inventory facts."
+                    ),
+            },
         }
 
         context_data = json.dumps(
-            analytics_context,
-            indent=2
+            llm_context,
+            indent=2,
         )
 
         request_id = str(uuid.uuid4())
 
         print(
-            f"[LLM Routing] Analytics "
-            f"-> Node 1 | request_id={request_id}"
+            "[LLM Routing] Inventory analytics "
+            "-> Node 1 | "
+            f"request_id={request_id}"
         )
+
+        # ----------------------------------------------------
+        # 4. Ask LLM for qualitative insights
+        # ----------------------------------------------------
 
         response = self.llm_stub.getLLMAnswer(
             inventory_pb2.LLMRequest(
@@ -755,42 +863,179 @@ class ClientServiceServicer(
         )
 
         try:
-
-            result = json.loads(
+            llm_result = json.loads(
                 response.answer
             )
 
         except json.JSONDecodeError as exc:
 
             raise ValueError(
-                f"LLM returned invalid JSON: "
-                f"{response.answer}"
+                "LLM returned invalid JSON for analytics: "
+                + response.answer
             ) from exc
 
-        observations = result.get(
-            "observations"
+        llm_insights = llm_result.get(
+            "observations",
+            [],
         )
 
-        actions = result.get(
-            "actions"
+        if not isinstance(
+            llm_insights,
+            list,
+        ):
+            llm_insights = []
+
+        # ----------------------------------------------------
+        # 5. Create authoritative observations
+        # ----------------------------------------------------
+
+        reorder_items = [
+            item
+            for item in inventory_facts
+            if item["reorder"]
+        ]
+
+        increasing_items = [
+            item
+            for item in inventory_facts
+            if item["demand_direction"]
+            == "INCREASING"
+        ]
+
+        decreasing_items = [
+            item
+            for item in inventory_facts
+            if item["demand_direction"]
+            == "DECREASING"
+        ]
+
+        stable_items = [
+            item
+            for item in inventory_facts
+            if item["demand_direction"]
+            == "STABLE"
+        ]
+
+        observations = []
+
+        observations.append(
+            (
+                f"{len(reorder_items)} of "
+                f"{len(inventory_facts)} products "
+                "require replenishment based on "
+                "predicted 7-day demand."
+            )
         )
 
-        if not isinstance(observations, list):
-            raise ValueError(
-                "LLM analytics response is missing "
-                "'observations'."
+        if reorder_items:
+
+            names = ", ".join(
+                item["product_name"]
+                for item in reorder_items
             )
 
-        if not isinstance(actions, list):
-            raise ValueError(
-                "LLM analytics response is missing "
-                "'actions'."
+            observations.append(
+                "Products requiring reorder: "
+                + names
+                + "."
             )
+
+        if increasing_items:
+
+            names = ", ".join(
+                item["product_name"]
+                for item in increasing_items
+            )
+
+            observations.append(
+                "Increasing demand detected for: "
+                + names
+                + "."
+            )
+
+        if decreasing_items:
+
+            names = ", ".join(
+                item["product_name"]
+                for item in decreasing_items
+            )
+
+            observations.append(
+                "Decreasing demand detected for: "
+                + names
+                + "."
+            )
+
+        if stable_items:
+
+            names = ", ".join(
+                item["product_name"]
+                for item in stable_items
+            )
+
+            observations.append(
+                "Stable demand detected for: "
+                + names
+                + "."
+            )
+
+        # ----------------------------------------------------
+        # 6. Create authoritative management actions
+        # ----------------------------------------------------
+
+        actions = []
+
+        for item in reorder_items:
+
+            actions.append(
+                (
+                    f"Reorder '{item['product_name']}' "
+                    f"by {item['reorder_quantity']} units "
+                    "to cover the predicted 7-day demand."
+                )
+            )
+
+        for item in increasing_items:
+
+            if item["reorder"]:
+
+                actions.append(
+                    (
+                        f"Monitor '{item['product_name']}' "
+                        "closely because demand is increasing "
+                        "and current stock is below predicted demand."
+                    )
+                )
+
+            else:
+
+                actions.append(
+                    (
+                        f"Monitor '{item['product_name']}' "
+                        "because demand is increasing, "
+                        "although current stock is sufficient "
+                        "for predicted 7-day demand."
+                    )
+                )
+
+        for item in decreasing_items:
+
+            actions.append(
+                (
+                    f"Review '{item['product_name']}' "
+                    "because recent demand is decreasing."
+                )
+            )
+
+        # ----------------------------------------------------
+        # 7. Final response
+        # ----------------------------------------------------
 
         return {
-            "products": analytics_products,
+            "products": inventory_facts,
             "observations": observations,
             "actions": actions,
+            "llm_insights": llm_insights,
         }
 
 

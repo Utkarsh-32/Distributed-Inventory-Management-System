@@ -154,6 +154,28 @@ Important rules:
 - Do not invent products or historical data.
 - Do not calculate reorder quantities.
 - A forecast is an estimate, not ground truth.
+
+IMPORTANT RULES:
+
+1. Treat every numerical field in the supplied inventory data
+   as authoritative.
+
+2. Do NOT recalculate, modify, or contradict:
+   - current_stock
+   - predicted_7_day_demand
+   - historical averages
+   - recent averages
+   - reorder_quantity
+   - stock_status
+
+3. The application server performs all arithmetic and
+   business-rule calculations.
+
+4. Your job is to provide qualitative explanations,
+   observations, trends, and reasoning.
+
+5. Never claim that a recent average is higher than a
+   historical average when the supplied numbers show otherwise.
 """
 
     user_prompt = (
@@ -221,6 +243,28 @@ def generate_reorder_suggestions(products):
     - Do not calculate reorder quantities.
     - The application server will calculate the exact quantity.
     - The reason should briefly explain the decision.
+
+    IMPORTANT RULES:
+
+1. Treat every numerical field in the supplied inventory data
+   as authoritative.
+
+2. Do NOT recalculate, modify, or contradict:
+   - current_stock
+   - predicted_7_day_demand
+   - historical averages
+   - recent averages
+   - reorder_quantity
+   - stock_status
+
+3. The application server performs all arithmetic and
+   business-rule calculations.
+
+4. Your job is to provide qualitative explanations,
+   observations, trends, and reasoning.
+
+5. Never claim that a recent average is higher than a
+   historical average when the supplied numbers show otherwise.
     """
 
     user_prompt = (
@@ -266,13 +310,27 @@ def generate_analytics(data):
         1. concise observations about inventory health and demand
         2. practical management actions
 
-        Important rules:
-        - Treat the supplied data as ground truth.
-        - Do not invent products or facts.
-        - Do not contradict the supplied reorder decisions.
-        - Do not calculate new values.
-        - Focus on useful management interpretation.
-        - Return JSON only.
+        IMPORTANT RULES:
+
+1. Treat every numerical field in the supplied inventory data
+   as authoritative.
+
+2. Do NOT recalculate, modify, or contradict:
+   - current_stock
+   - predicted_7_day_demand
+   - historical averages
+   - recent averages
+   - reorder_quantity
+   - stock_status
+
+3. The application server performs all arithmetic and
+   business-rule calculations.
+
+4. Your job is to provide qualitative explanations,
+   observations, trends, and reasoning.
+
+5. Never claim that a recent average is higher than a
+   historical average when the supplied numbers show otherwise.
     """
 
     user_prompt = (
