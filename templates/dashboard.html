@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Inventory Dashboard</title>
+
+    <link
+        rel="stylesheet"
+        href="/static/style.css"
+    >
+
+</head>
+
+<body>
+
+<nav class="navbar">
+
+    <div class="brand">
+        Distributed Inventory
+    </div>
+
+    <div class="nav-right">
+
+        <span>
+            {{ username }}
+        </span>
+
+        <a href="/logout">
+            Logout
+        </a>
+
+    </div>
+
+</nav>
+
+
+<div class="container">
+
+    <div class="page-heading">
+
+        <h1>
+            Inventory Dashboard
+        </h1>
+
+        <p>
+            Welcome, {{ username }}
+        </p>
+
+    </div>
+
+
+    {% if message %}
+
+    <div class="alert {{ message_type }}">
+
+        {{ message }}
+
+    </div>
+
+    {% endif %}
+
+
+    <!-- ============================================ -->
+    <!-- INVENTORY -->
+    <!-- ============================================ -->
+
+    <div class="card">
+
+        <h2>
+            Current Inventory
+        </h2>
+
+        <table>
+
+            <thead>
+
+                <tr>
+
+                    <th>
+                        Product
+                    </th>
+
+                    <th>
+                        Stock
+                    </th>
+
+                    <th>
+                        Order
+                    </th>
+
+                </tr>
+
+            </thead>
+
+            <tbody>
+
+            {% for item in inventory %}
+
+                <tr>
+
+                    <td>
+                        {{ item.name }}
+                    </td>
+
+                    <td>
+
+                        {% if item.stock <= 5 %}
+
+                        <span class="low-stock">
+                            {{ item.stock }}
+                        </span>
+
+                        {% else %}
+
+                        {{ item.stock }}
+
+                        {% endif %}
+
+                    </td>
+
+                    <td>
+
+                        <form
+                            method="post"
+                            action="/order"
+                            class="order-form"
+                        >
+
+                            <input
+                                type="hidden"
+                                name="item_id"
+                                value="{{ item.item_id }}"
+                            >
+
+                            <input
+                                type="number"
+                                name="quantity"
+                                min="1"
+                                placeholder="Qty"
+                                required
+                            >
+
+                            <button type="submit">
+                                Place Order
+                            </button>
+
+                        </form>
+
+                    </td>
+
+                </tr>
+
+            {% endfor %}
+
+            </tbody>
+
+        </table>
+
+    </div>
+
+
+    <!-- ============================================ -->
+    <!-- ORDER HISTORY -->
+    <!-- ============================================ -->
+
+    <div class="card">
+
+        <h2>
+            Your Recent Orders
+        </h2>
+
+        {% if orders %}
+
+            <div class="orders">
+
+            {% for order in orders %}
+
+                <div class="order-item">
+
+                    {{ order }}
+
+                </div>
+
+            {% endfor %}
+
+            </div>
+
+        {% else %}
+
+            <p class="empty">
+                You have not placed any orders yet.
+            </p>
+
+        {% endif %}
+
+    </div>
+
+
+    <!-- ============================================ -->
+    <!-- FUTURE FEATURES -->
+    <!-- ============================================ -->
+
+    <div class="card">
+
+        <h2>
+            AI Inventory Assistant
+        </h2>
+
+        <p>
+            Demand forecasting, automated reorder
+            recommendations, and analytics will appear
+            here after the LLM server is added.
+        </p>
+
+    </div>
+
+</div>
+
+</body>
+
+</html>

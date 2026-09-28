@@ -124,6 +124,39 @@ class ClientServiceServicer(
                 items=items,
             )
 
+                # ----------------------------------------------------
+        # ORDER HISTORY
+        # ----------------------------------------------------
+
+        if request.type == "order_history":
+
+            orders = database.get_order_history(
+                user_id
+            )
+
+            items = []
+
+            for order in orders:
+
+                items.append(
+                    inventory_pb2.DataItem(
+                        id=str(order["id"]),
+                        data=(
+                            f"Order #{order['id']} | "
+                            f"{order['product_name']} | "
+                            f"Quantity: {order['quantity']} | "
+                            f"Status: {order['status']} | "
+                            f"{order['created_at']}"
+                        ),
+                    )
+                )
+
+            return inventory_pb2.GetResponse(
+                status="SUCCESS",
+                items=items,
+            )
+
+
         return inventory_pb2.GetResponse(
             status="UNKNOWN_TYPE",
             items=[],

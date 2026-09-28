@@ -421,6 +421,39 @@ def place_order(user_id: int, item_id: str, quantity: int):
         conn.close()
 
 
+def get_order_history(user_id: int):
+    """
+    Return the most recent successful orders for a user.
+    """
+
+    conn = get_connection()
+
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                orders.id,
+                orders.item_id,
+                products.name AS product_name,
+                orders.quantity,
+                orders.status,
+                orders.created_at
+            FROM orders
+            JOIN products
+                ON products.item_id = orders.item_id
+            WHERE orders.user_id = ?
+            ORDER BY orders.id DESC
+            LIMIT 20
+            """,
+            (user_id,),
+        ).fetchall()
+
+        return [dict(row) for row in rows]
+
+    finally:
+        conn.close()
+
+
 # ============================================================
 # MAIN
 # ============================================================
