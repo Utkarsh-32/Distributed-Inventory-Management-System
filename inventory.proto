@@ -1,0 +1,163 @@
+syntax = "proto3";
+
+package inventory;
+
+
+// ============================================================
+// CLIENT -> APPLICATION SERVER
+// ============================================================
+
+service ClientService {
+
+    // Authenticate a user and create a session.
+    rpc login(LoginRequest)
+        returns (LoginResponse);
+
+    // End an authenticated session.
+    rpc logout(LogoutRequest)
+        returns (StatusResponse);
+
+    // Send an operation such as placing an order.
+    rpc post(PostRequest)
+        returns (StatusResponse);
+
+    // Retrieve information such as inventory or order history.
+    rpc get(GetRequest)
+        returns (GetResponse);
+}
+
+
+// ============================================================
+// APPLICATION SERVER INTERNAL SERVICE
+// ============================================================
+
+service AppServerService {
+
+    // Generic business-logic entry point.
+    rpc processBusinessRequest(BusinessRequest)
+        returns (StatusResponse);
+}
+
+
+// ============================================================
+// APPLICATION SERVER -> LLM SERVER
+// ============================================================
+
+service LLMService {
+
+    // Send an AI task and its context to the LLM server.
+    rpc getLLMAnswer(LLMRequest)
+        returns (LLMAnswerResponse);
+}
+
+
+// ============================================================
+// AUTHENTICATION
+// ============================================================
+
+message LoginRequest {
+    string username = 1;
+    string password = 2;
+}
+
+
+message LoginResponse {
+    string status = 1;
+    string token = 2;
+}
+
+
+message LogoutRequest {
+    string token = 1;
+}
+
+
+// ============================================================
+// GENERIC STATUS
+// ============================================================
+
+message StatusResponse {
+    string status = 1;
+    string message = 2;
+}
+
+
+// ============================================================
+// CLIENT OPERATIONS
+// ============================================================
+
+message PostRequest {
+    string token = 1;
+
+    // Examples:
+    // "order"
+    // "cancel_order"
+    // etc.
+    string type = 2;
+
+    // Operation-specific payload.
+    //
+    // For an order we will send JSON such as:
+    //
+    // {
+    //     "item_id": "item_102",
+    //     "quantity": 4
+    // }
+    string data = 3;
+}
+
+
+message GetRequest {
+    string token = 1;
+
+    // Examples:
+    // "inventory"
+    // "order_history"
+    // "llm_demand_prediction"
+    // "llm_reorder_suggestion"
+    // "llm_analytics"
+    string type = 2;
+
+    // Optional parameters encoded as JSON.
+    string params = 3;
+}
+
+
+message DataItem {
+    string id = 1;
+    string data = 2;
+}
+
+
+message GetResponse {
+    string status = 1;
+    repeated DataItem items = 2;
+}
+
+
+// ============================================================
+// APPLICATION SERVER INTERNAL REQUEST
+// ============================================================
+
+message BusinessRequest {
+    string request_id = 1;
+    string payload = 2;
+    string context = 3;
+}
+
+
+// ============================================================
+// LLM COMMUNICATION
+// ============================================================
+
+message LLMRequest {
+    string request_id = 1;
+    string query = 2;
+    string context = 3;
+}
+
+
+message LLMAnswerResponse {
+    string request_id = 1;
+    string answer = 2;
+}
