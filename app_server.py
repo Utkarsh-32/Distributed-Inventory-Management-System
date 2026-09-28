@@ -135,26 +135,91 @@ class ClientServiceServicer(
 
     def post(self, request, context):
 
-        # We haven't implemented orders yet.
-        # That's intentionally coming in the next layer.
+        # --------------------------------------------------------
+        # 1. Authentication
+        # --------------------------------------------------------
 
         user_id = database.get_user_id_from_token(
             request.token
         )
 
         if user_id is None:
-
             return inventory_pb2.StatusResponse(
                 status="UNAUTHORIZED",
-                message="Valid login required",
+                message="Valid login required.",
             )
 
+        # --------------------------------------------------------
+        # 2. Determine operation
+        # --------------------------------------------------------
+
+        if request.type != "order":
+            return inventory_pb2.StatusResponse(
+                status="UNKNOWN_OPERATION",
+                message=(
+                    f"Unsupported POST type: {request.type}"
+                ),
+            )
+
+        # --------------------------------------------------------
+        # 3. Parse JSON payload
+        # --------------------------------------------------------
+
+        try:
+            import json
+
+            order_data = json.loads(request.data)
+
+            item_id = order_data["item_id"]
+            quantity = int(order_data["quantity"])
+
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+
+            return inventory_pb2.StatusResponse(
+                status="INVALID_DATA",
+                message=(
+                    "Order data must be JSON containing "
+                    "'item_id' and 'quantity'."
+                ),
+            )
+
+        # --------------------------------------------------------
+        # 4. Execute transaction
+        # --------------------------------------------------------
+
+        try:
+
+            result = database.place_order(
+                user_id=user_id,
+                item_id=item_id,
+                quantity=quantity,
+            )
+
+        except Exception as exc:
+
+            print(
+                f"[ORDER] Database error: {exc}"
+            )
+
+            return inventory_pb2.StatusResponse(
+                status="INTERNAL_ERROR",
+                message="Unable to process order.",
+            )
+
+        # --------------------------------------------------------
+        # 5. Return result
+        # --------------------------------------------------------
+
+        print(
+            f"[ORDER] user={user_id} "
+            f"item={item_id} "
+            f"quantity={quantity} "
+            f"status={result['status']}"
+        )
+
         return inventory_pb2.StatusResponse(
-            status="NOT_IMPLEMENTED",
-            message=(
-                "POST operations will be added "
-                "in the order-processing phase."
-            ),
+            status=result["status"],
+            message=result["message"],
         )
 
 

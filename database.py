@@ -309,6 +309,118 @@ def get_all_products():
         conn.close()
 
 
+def place_order(user_id: int, item_id: str, quantity: int):
+    """
+    Atomically place an order.
+
+    Returns a dictionary describing the result.
+    """
+
+    # Validate before touching the database.
+    if quantity <= 0:
+        return {
+            "success": False,
+            "status": "INVALID_QUANTITY",
+            "message": "Quantity must be greater than zero.",
+        }
+
+    conn = get_connection()
+
+    try:
+        # BEGIN IMMEDIATE obtains a write transaction.
+        #
+        # This is important for concurrency:
+        # only one writer can perform the stock-changing
+        # transaction at a time.
+        conn.execute("BEGIN IMMEDIATE")
+
+        product = conn.execute(
+            """
+            SELECT item_id, name, stock
+            FROM products
+            WHERE item_id = ?
+            """,
+            (item_id,),
+        ).fetchone()
+
+        if product is None:
+            conn.rollback()
+
+            return {
+                "success": False,
+                "status": "ITEM_NOT_FOUND",
+                "message": "The requested product does not exist.",
+            }
+
+        current_stock = product["stock"]
+
+        # Critical inventory check.
+        if current_stock < quantity:
+            conn.rollback()
+
+            return {
+                "success": False,
+                "status": "FAILED_INSUFFICIENT_STOCK",
+                "message": (
+                    f"Only {current_stock} units of "
+                    f"{product['name']} are available."
+                ),
+            }
+
+        # Decrease the stock.
+        conn.execute(
+            """
+            UPDATE products
+            SET stock = stock - ?
+            WHERE item_id = ?
+            """,
+            (quantity, item_id),
+        )
+
+        remaining_stock = current_stock - quantity
+
+        # Record the successful order.
+        cursor = conn.execute(
+            """
+            INSERT INTO orders
+                (user_id, item_id, quantity, status, created_at)
+            VALUES
+                (?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                item_id,
+                quantity,
+                "SUCCESS",
+                utc_now(),
+            ),
+        )
+
+        order_id = cursor.lastrowid
+
+        # Everything succeeded.
+        conn.commit()
+
+        return {
+            "success": True,
+            "status": "SUCCESS",
+            "message": (
+                f"Order #{order_id} placed successfully. "
+                f"Ordered {quantity} × {product['name']}. "
+                f"Remaining stock: {remaining_stock}."
+            ),
+            "order_id": order_id,
+            "remaining_stock": remaining_stock,
+        }
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
+
+
 # ============================================================
 # MAIN
 # ============================================================
