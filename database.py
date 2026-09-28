@@ -454,6 +454,58 @@ def get_order_history(user_id: int):
         conn.close()
 
 
+def get_products_with_history():
+    """
+    Return every product together with its complete sales history.
+
+    This is read-only. It does not modify inventory.
+    """
+    conn = get_connection()
+
+    try:
+        product_rows = conn.execute(
+            """
+            SELECT item_id, name, stock
+            FROM products
+            ORDER BY item_id
+            """
+        ).fetchall()
+
+        history_rows = conn.execute(
+            """
+            SELECT item_id, day_index, units_sold
+            FROM sales_history
+            ORDER BY item_id, day_index
+            """
+        ).fetchall()
+
+    finally:
+        conn.close()
+
+    history_by_item = {}
+
+    for row in history_rows:
+        history_by_item.setdefault(row["item_id"], []).append(
+            int(row["units_sold"])
+        )
+
+    products = []
+
+    for row in product_rows:
+        item_id = row["item_id"]
+
+        products.append(
+            {
+                "item_id": item_id,
+                "product_name": row["name"],
+                "current_stock": int(row["stock"]),
+                "sales_history": history_by_item.get(item_id, []),
+            }
+        )
+
+    return products
+
+
 # ============================================================
 # MAIN
 # ============================================================
