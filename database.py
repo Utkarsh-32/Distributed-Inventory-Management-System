@@ -151,8 +151,93 @@ def initialize_database():
         """
     )
 
+    _ensure_sales_history_tracking_column(conn)
+    _record_legacy_orders_in_sales_history(conn)
+
     conn.commit()
     conn.close()
+
+
+def _ensure_sales_history_tracking_column(conn):
+    """Add the order-to-sales-history marker for existing databases."""
+    columns = conn.execute(
+        "PRAGMA table_info(orders)"
+    ).fetchall()
+
+    if any(column["name"] == "sales_history_recorded" for column in columns):
+        return
+
+    conn.execute(
+        """
+        ALTER TABLE orders
+        ADD COLUMN sales_history_recorded INTEGER NOT NULL DEFAULT 0
+        """
+    )
+
+
+def _record_sale_in_latest_history(conn, item_id, quantity):
+    """Add a sale to the latest daily observation for one product."""
+    latest_history = conn.execute(
+        """
+        SELECT id
+        FROM sales_history
+        WHERE item_id = ?
+        ORDER BY day_index DESC, id DESC
+        LIMIT 1
+        """,
+        (item_id,),
+    ).fetchone()
+
+    if latest_history is None:
+        conn.execute(
+            """
+            INSERT INTO sales_history
+                (item_id, day_index, units_sold)
+            VALUES
+                (?, ?, ?)
+            """,
+            (item_id, 1, quantity),
+        )
+        return
+
+    conn.execute(
+        """
+        UPDATE sales_history
+        SET units_sold = units_sold + ?
+        WHERE id = ?
+        """,
+        (quantity, latest_history["id"]),
+    )
+
+
+def _record_legacy_orders_in_sales_history(conn):
+    """Bring orders created before sales tracking into forecast history."""
+    legacy_orders = conn.execute(
+        """
+        SELECT item_id, SUM(quantity) AS total_quantity
+        FROM orders
+        WHERE status = 'SUCCESS'
+          AND sales_history_recorded = 0
+        GROUP BY item_id
+        """
+    ).fetchall()
+
+    for order in legacy_orders:
+        _record_sale_in_latest_history(
+            conn,
+            order["item_id"],
+            int(order["total_quantity"]),
+        )
+
+    if legacy_orders:
+        conn.execute(
+            """
+            UPDATE orders
+            SET sales_history_recorded = 1
+            WHERE status = 'SUCCESS'
+              AND sales_history_recorded = 0
+            """
+        )
 
 
 # ============================================================
@@ -379,13 +464,29 @@ def place_order(user_id: int, item_id: str, quantity: int):
 
         remaining_stock = current_stock - quantity
 
+        # A successful order is also a sale.  Include it in the most recent
+        # daily observation so the rolling seven-day average, trend, and
+        # forecast all reflect the same transaction as the stock level.
+        _record_sale_in_latest_history(
+            conn,
+            item_id,
+            quantity,
+        )
+
         # Record the successful order.
         cursor = conn.execute(
             """
             INSERT INTO orders
-                (user_id, item_id, quantity, status, created_at)
+                (
+                    user_id,
+                    item_id,
+                    quantity,
+                    status,
+                    created_at,
+                    sales_history_recorded
+                )
             VALUES
-                (?, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?, 1)
             """,
             (
                 user_id,

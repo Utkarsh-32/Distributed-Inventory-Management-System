@@ -15,7 +15,11 @@ import inventory_pb2_grpc
 APP_SERVER_ADDRESS = "localhost:50052"
 
 LLM_SERVER_ADDRESS = "localhost:50051"
+# Qualitative insight requests are deliberately short, but generating a
+# structured forecast for the complete inventory can take much longer on a
+# locally hosted model (and the first request may need to load the model).
 LLM_REQUEST_TIMEOUT_SECONDS = 20
+LLM_FORECAST_REQUEST_TIMEOUT_SECONDS = 300
 DASHBOARD_CACHE_TTL_SECONDS = 300
 USE_LLM_FORECASTS = os.getenv(
     "USE_LLM_FORECASTS",
@@ -474,7 +478,7 @@ class ClientServiceServicer(
                     query="llm_demand_prediction",
                     context=context_data,
                 ),
-                timeout=LLM_REQUEST_TIMEOUT_SECONDS,
+                timeout=LLM_FORECAST_REQUEST_TIMEOUT_SECONDS,
             )
 
             try:
@@ -483,6 +487,17 @@ class ClientServiceServicer(
                 raise ValueError(
                     f"LLM returned invalid JSON: {response.answer}"
                 ) from exc
+
+            if not isinstance(result, dict):
+                raise ValueError(
+                    "LLM forecast response is not a JSON object."
+                )
+
+            if "error" in result:
+                raise ValueError(
+                    "LLM forecast failed: "
+                    + str(result["error"])
+                )
 
             forecasts = result.get("forecasts")
 

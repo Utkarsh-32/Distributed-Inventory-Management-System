@@ -89,6 +89,40 @@ class DashboardOptimizationTests(unittest.TestCase):
             True,
         )
 
+    @patch("app_server.USE_LLM_FORECASTS", True)
+    @patch("app_server.database.get_products_with_history")
+    def test_model_forecasts_use_the_extended_timeout(self, products):
+        products.return_value = self.products
+
+        forecasts = self.service._get_llm_demand_forecast()
+
+        self.assertEqual(len(forecasts), 2)
+        self.assertEqual(
+            self.service.llm_stub.calls,
+            [
+                (
+                    "llm_demand_prediction",
+                    app_server.LLM_FORECAST_REQUEST_TIMEOUT_SECONDS,
+                ),
+            ],
+        )
+
+    @patch("app_server.USE_LLM_FORECASTS", True)
+    @patch("app_server.database.get_products_with_history")
+    def test_model_forecasts_preserve_the_llm_server_error(self, products):
+        products.return_value = self.products
+        self.service.llm_stub = SimpleNamespace(
+            getLLMAnswer=lambda request, timeout: SimpleNamespace(
+                answer=json.dumps({"error": "model output was incomplete"})
+            )
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "LLM forecast failed: model output was incomplete",
+        ):
+            self.service._get_llm_demand_forecast()
+
     def test_invalidate_dashboard_cache(self):
         self.service.dashboard_cache = {"cached": True}
         self.service.dashboard_cache_created_at = 1.0

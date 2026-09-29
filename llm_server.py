@@ -49,10 +49,16 @@ FORECAST_SCHEMA = {
                         "minimum": 0
                     },
                     "trend": {
-                        "type": "string"
+                        "type": "string",
+                        "enum": [
+                            "increasing",
+                            "decreasing",
+                            "stable",
+                        ],
                     },
                     "reason": {
-                        "type": "string"
+                        "type": "string",
+                        "maxLength": 120,
                     }
                 },
                 "required": [
@@ -138,52 +144,17 @@ def generate_forecast(products):
     system_prompt = """
 You are an inventory demand forecasting assistant.
 
-Your task is to estimate total demand for each product
-over the next 7 days.
+Estimate total demand for the next 7 days for every supplied product.
+Use the provided 30-day and recent sales statistics as evidence.
 
-You are given:
-- current inventory
-- 30 days of historical sales
-- recent sales statistics
-- trend information
+Return only the JSON object required by the schema. Its forecasts array must
+contain exactly one entry for every supplied item_id. For each entry:
+- copy item_id and product_name exactly from the input;
+- set predicted_7_day_demand to a non-negative integer;
+- set trend to increasing, decreasing, or stable;
+- give a concise reason of at most 120 characters.
 
-Use the supplied evidence.
-
-Consider:
-1. recent demand
-2. longer-term demand
-3. increasing or decreasing trends
-4. unusual variability
-
-Important rules:
-- Return JSON only.
-- Return exactly one forecast for every supplied product.
-- predicted_7_day_demand must be a non-negative integer.
-- Do not invent products or historical data.
-- Do not calculate reorder quantities.
-- A forecast is an estimate, not ground truth.
-
-IMPORTANT RULES:
-
-1. Treat every numerical field in the supplied inventory data
-   as authoritative.
-
-2. Do NOT recalculate, modify, or contradict:
-   - current_stock
-   - predicted_7_day_demand
-   - historical averages
-   - recent averages
-   - reorder_quantity
-   - stock_status
-
-3. The application server performs all arithmetic and
-   business-rule calculations.
-
-4. Your job is to provide qualitative explanations,
-   observations, trends, and reasoning.
-
-5. Never claim that a recent average is higher than a
-   historical average when the supplied numbers show otherwise.
+Do not invent products, historical values, or reorder quantities.
 """
 
     user_prompt = (
