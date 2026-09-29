@@ -4,6 +4,7 @@
 
 body {
     margin: 0;
+
     font-family:
         -apple-system,
         BlinkMacSystemFont,
@@ -46,6 +47,10 @@ body {
     text-decoration: none;
 }
 
+.nav-right a:hover {
+    text-decoration: underline;
+}
+
 
 /* ============================= */
 /* LAYOUT */
@@ -53,12 +58,23 @@ body {
 
 .container {
     max-width: 1100px;
+
     margin: 40px auto;
+
     padding: 0 20px;
 }
 
 .page-heading {
     margin-bottom: 25px;
+}
+
+.page-heading h1 {
+    margin-bottom: 6px;
+}
+
+.page-heading p {
+    color: #64748b;
+    margin-top: 0;
 }
 
 
@@ -123,6 +139,16 @@ input {
     font-size: 15px;
 }
 
+input:focus {
+    outline: none;
+
+    border-color: #2563eb;
+
+    box-shadow:
+        0 0 0 3px
+        rgba(37, 99, 235, 0.12);
+}
+
 button {
     background: #2563eb;
     color: white;
@@ -136,10 +162,18 @@ button {
     cursor: pointer;
 
     font-weight: 600;
+
+    transition:
+        background 0.15s ease,
+        transform 0.05s ease;
 }
 
 button:hover {
     background: #1d4ed8;
+}
+
+button:active {
+    transform: translateY(1px);
 }
 
 .login-card button {
@@ -165,6 +199,23 @@ button:hover {
     box-shadow:
         0 5px 20px
         rgba(0, 0, 0, 0.05);
+
+    overflow-x: auto;
+}
+
+.card h2 {
+    margin-top: 0;
+
+    margin-bottom: 20px;
+
+    color: #1e293b;
+}
+
+.card h3 {
+    margin-top: 28px;
+    margin-bottom: 14px;
+
+    color: #334155;
 }
 
 
@@ -186,7 +237,32 @@ td {
 
     border-bottom:
         1px solid #e5e7eb;
+
+    vertical-align: top;
 }
+
+th {
+    background: #f8fafc;
+
+    color: #334155;
+
+    font-weight: 600;
+
+    white-space: nowrap;
+}
+
+tr:last-child td {
+    border-bottom: none;
+}
+
+tbody tr:hover {
+    background: #f8fafc;
+}
+
+
+/* ============================= */
+/* ORDER FORM */
+/* ============================= */
 
 .order-form {
     display: flex;
@@ -200,8 +276,35 @@ td {
     width: 90px;
 }
 
+.order-form button {
+    white-space: nowrap;
+}
+
+
+/* ============================= */
+/* STOCK STATUS */
+/* ============================= */
+
 .low-stock {
     color: #dc2626;
+
+    font-weight: 700;
+}
+
+.status-low {
+    color: #dc2626;
+
+    font-weight: 700;
+}
+
+.status-good {
+    color: #166534;
+
+    font-weight: 700;
+}
+
+.status-warning {
+    color: #d97706;
 
     font-weight: 700;
 }
@@ -221,11 +324,13 @@ td {
 
 .alert.success {
     background: #dcfce7;
+
     color: #166534;
 }
 
 .alert.error {
     background: #fee2e2;
+
     color: #991b1b;
 }
 
@@ -239,6 +344,10 @@ td {
 
     border-bottom:
         1px solid #e5e7eb;
+}
+
+.order-item:last-child {
+    border-bottom: none;
 }
 
 .empty {
@@ -260,4 +369,325 @@ td {
     border-radius: 8px;
 
     color: #475569;
+}
+
+
+/* ============================= */
+/* DASHBOARD SECTIONS */
+/* ============================= */
+
+.dashboard-section {
+    margin-top: 30px;
+
+    padding: 24px;
+
+    border-radius: 12px;
+
+    background: #ffffff;
+
+    box-shadow:
+        0 2px 10px
+        rgba(0, 0, 0, 0.08);
+}
+
+.dashboard-section h2 {
+    margin-bottom: 20px;
+}
+
+.dashboard-section h3 {
+    margin-top: 24px;
+
+    margin-bottom: 12px;
+}
+
+.table-container {
+    width: 100%;
+
+    overflow-x: auto;
+}
+
+.dashboard-section table {
+    width: 100%;
+
+    border-collapse: collapse;
+}
+
+.dashboard-section th,
+.dashboard-section td {
+    padding: 10px 12px;
+
+    text-align: left;
+
+    border-bottom:
+        1px solid #ddd;
+}
+
+.dashboard-section th {
+    font-weight: 600;
+}
+
+.dashboard-section ul {
+    padding-left: 22px;
+}
+
+.dashboard-section li {
+    margin-bottom: 8px;
+}
+
+
+/* ============================= */
+/* AI INVENTORY FEATURES */
+/* ============================= */
+
+.ai-list {
+    margin-top: 10px;
+}
+
+.ai-item {
+    padding: 12px 15px;
+
+    margin-bottom: 8px;
+
+    background: #f8fafc;
+
+    border-left:
+        4px solid #2563eb;
+
+    border-radius: 6px;
+
+    color: #334155;
+
+    line-height: 1.5;
+}
+
+.ai-item:last-child {
+    margin-bottom: 0;
+}
+
+
+/* ============================= */
+/* AI REASON TEXT */
+/* ============================= */
+
+.reason {
+    color: #475569;
+
+    font-size: 14px;
+
+    line-height: 1.5;
+
+    max-width: 350px;
+
+    min-width: 220px;
+}
+
+
+/* ============================= */
+/* AI HEADINGS */
+/* ============================= */
+
+.ai-heading {
+    display: flex;
+
+    align-items: center;
+
+    gap: 10px;
+}
+
+.ai-badge {
+    display: inline-block;
+
+    padding: 4px 8px;
+
+    border-radius: 999px;
+
+    background: #dbeafe;
+
+    color: #1d4ed8;
+
+    font-size: 12px;
+
+    font-weight: 700;
+}
+
+
+/* ============================= */
+/* AI TABLES */
+/* ============================= */
+
+.card table {
+    margin-top: 10px;
+}
+
+.card table th {
+    white-space: nowrap;
+}
+
+.card table td {
+    line-height: 1.4;
+}
+
+
+/* ============================= */
+/* AI DEMAND TREND */
+/* ============================= */
+
+.trend-increasing {
+    color: #d97706;
+
+    font-weight: 700;
+}
+
+.trend-decreasing {
+    color: #166534;
+
+    font-weight: 700;
+}
+
+.trend-stable {
+    color: #475569;
+
+    font-weight: 600;
+}
+
+
+/* ============================= */
+/* AI REORDER STATUS */
+/* ============================= */
+
+.reorder-yes {
+    color: #dc2626;
+
+    font-weight: 700;
+}
+
+.reorder-no {
+    color: #166534;
+
+    font-weight: 700;
+}
+
+
+/* ============================= */
+/* MOBILE / SMALL SCREENS */
+/* ============================= */
+
+@media (max-width: 768px) {
+
+    .navbar {
+        padding: 14px 18px;
+    }
+
+    .brand {
+        font-size: 18px;
+    }
+
+    .nav-right {
+        gap: 10px;
+    }
+
+    .container {
+        margin: 25px auto;
+
+        padding: 0 12px;
+    }
+
+    .card {
+        padding: 18px;
+
+        border-radius: 12px;
+    }
+
+    .card h2 {
+        font-size: 20px;
+    }
+
+    table {
+        min-width: 750px;
+    }
+
+    .order-form {
+        flex-direction: column;
+
+        align-items: stretch;
+    }
+
+    .order-form input {
+        width: 100%;
+    }
+
+    .order-form button {
+        width: 100%;
+    }
+
+    .login-card {
+        width: calc(100% - 30px);
+
+        padding: 25px;
+    }
+}
+
+/* ============================= */
+/* AI LOADING */
+/* ============================= */
+
+.ai-loading {
+    margin-top: 25px;
+
+    padding: 30px;
+
+    text-align: center;
+
+    background: #f8fafc;
+
+    border-radius: 12px;
+}
+
+.ai-loading h3 {
+    margin-top: 15px;
+    margin-bottom: 8px;
+}
+
+.ai-loading p {
+    color: #64748b;
+    margin-bottom: 0;
+}
+
+.ai-spinner {
+    width: 38px;
+    height: 38px;
+
+    margin: 0 auto;
+
+    border:
+        4px solid #e2e8f0;
+
+    border-top-color: #2563eb;
+
+    border-radius: 50%;
+
+    animation:
+        ai-spin 0.8s linear infinite;
+}
+
+@keyframes ai-spin {
+
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
+
+}
+
+#run-ai-button {
+    margin-top: 10px;
+}
+
+#run-ai-button:disabled {
+    opacity: 0.7;
+
+    cursor: wait;
 }

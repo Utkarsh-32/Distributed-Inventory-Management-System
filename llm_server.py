@@ -1,4 +1,5 @@
 import json
+import os
 import time
 from concurrent import futures
 
@@ -10,7 +11,19 @@ import inventory_pb2_grpc
 
 
 LLM_SERVER_ADDRESS = "localhost:50051"
-MODEL = "qwen3:8b"
+MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+MODEL_KEEP_ALIVE = "10m"
+
+# Keep structured responses short.  This reduces local CPU/GPU time while
+# leaving enough room for a complete JSON result for all products.
+FORECAST_OPTIONS = {
+    "temperature": 0.1,
+    "num_predict": 768,
+}
+ANALYTICS_OPTIONS = {
+    "temperature": 0.1,
+    "num_predict": 128,
+}
 
 
 # ============================================================
@@ -97,20 +110,15 @@ ANALYTICS_SCHEMA = {
     "properties": {
         "observations": {
             "type": "array",
+            "maxItems": 2,
             "items": {
-                "type": "string"
-            }
-        },
-        "actions": {
-            "type": "array",
-            "items": {
-                "type": "string"
+                "type": "string",
+                "maxLength": 100,
             }
         }
     },
     "required": [
         "observations",
-        "actions"
     ]
 }
 
@@ -200,11 +208,10 @@ IMPORTANT RULES:
 
         format=FORECAST_SCHEMA,
 
-        options={
-            "temperature": 0.1,
-        },
+        options=FORECAST_OPTIONS,
 
         think=False,
+        keep_alive=MODEL_KEEP_ALIVE,
     )
 
     content = response.message.content
@@ -285,10 +292,9 @@ def generate_reorder_suggestions(products):
             },
         ],
         format=REORDER_SCHEMA,
-        options={
-            "temperature": 0.1,
-        },
+        options=FORECAST_OPTIONS,
         think=False,
+        keep_alive=MODEL_KEEP_ALIVE,
     )
 
     return json.loads(response.message.content)
@@ -306,9 +312,9 @@ def generate_analytics(data):
         Analyze the validated inventory information supplied by the
         application server.
 
-        Produce:
-        1. concise observations about inventory health and demand
-        2. practical management actions
+        Produce at most two concise observations. Each observation must be
+        one sentence of no more than 100 characters. The application server
+        creates the management actions.
 
         IMPORTANT RULES:
 
@@ -352,10 +358,9 @@ def generate_analytics(data):
             },
         ],
         format=ANALYTICS_SCHEMA,
-        options={
-            "temperature": 0.1,
-        },
+        options=ANALYTICS_OPTIONS,
         think=False,
+        keep_alive=MODEL_KEEP_ALIVE,
     )
 
     return json.loads(response.message.content)
@@ -503,28 +508,15 @@ def validate_analytics(result):
         )
 
     observations = result.get("observations")
-    actions = result.get("actions")
-
     if not isinstance(observations, list):
         raise ValueError(
             "Analytics response does not contain observations."
-        )
-
-    if not isinstance(actions, list):
-        raise ValueError(
-            "Analytics response does not contain actions."
         )
 
     for observation in observations:
         if not isinstance(observation, str):
             raise ValueError(
                 "Analytics observation is not a string."
-            )
-
-    for action in actions:
-        if not isinstance(action, str):
-            raise ValueError(
-                "Analytics action is not a string."
             )
 
     return result

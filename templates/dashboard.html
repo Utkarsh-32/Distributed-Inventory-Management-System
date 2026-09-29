@@ -204,26 +204,805 @@
 
     </div>
 
+<!-- ============================================ -->
+<!-- AI INVENTORY ANALYTICS -->
+<!-- ============================================ -->
 
-    <!-- ============================================ -->
-    <!-- FUTURE FEATURES -->
-    <!-- ============================================ -->
+<div class="card">
 
-    <div class="card">
+    <h2>
+        AI Inventory Analytics
+    </h2>
 
-        <h2>
-            AI Inventory Assistant
-        </h2>
+    <p>
+        Generate demand forecasts, reorder recommendations,
+        and inventory insights using the local AI model.
+    </p>
+
+    <button
+        type="button"
+        id="run-ai-button"
+        onclick="runAIAnalytics()"
+    >
+        Run AI Analytics
+    </button>
+
+
+    <!-- ======================================== -->
+    <!-- LOADING MESSAGE -->
+    <!-- ======================================== -->
+
+    <div
+        id="ai-loading"
+        class="ai-loading"
+        style="display: none;"
+    >
+
+        <div class="ai-spinner"></div>
+
+        <h3>
+            Please wait...
+        </h3>
 
         <p>
-            Demand forecasting, automated reorder
-            recommendations, and analytics will appear
-            here after the LLM server is added.
+            The local AI model is processing your
+            inventory data. This may take a while.
         </p>
 
     </div>
 
+
+    <!-- ======================================== -->
+    <!-- ERROR -->
+    <!-- ======================================== -->
+
+    <div
+        id="ai-error"
+        class="alert error"
+        style="display: none;"
+    ></div>
+
+
+    <!-- ======================================== -->
+    <!-- AI RESULTS -->
+    <!-- ======================================== -->
+
+    <div
+        id="ai-results"
+        style="display: none;"
+    >
+
+
+        <!-- ==================================== -->
+        <!-- DEMAND FORECAST -->
+        <!-- ==================================== -->
+
+        <h3>
+            Demand Forecast
+        </h3>
+
+        <table>
+
+            <thead>
+
+                <tr>
+
+                    <th>Product</th>
+                    <th>Current Stock</th>
+                    <th>Predicted 7-Day Demand</th>
+                    <th>Trend</th>
+                    <th>Reason</th>
+
+                </tr>
+
+            </thead>
+
+            <tbody id="forecast-body">
+            </tbody>
+
+        </table>
+
+
+        <!-- ==================================== -->
+        <!-- REORDER RECOMMENDATIONS -->
+        <!-- ==================================== -->
+
+        <h3>
+            Reorder Recommendations
+        </h3>
+
+        <table>
+
+            <thead>
+
+                <tr>
+
+                    <th>Product</th>
+                    <th>Current Stock</th>
+                    <th>Predicted Demand</th>
+                    <th>Recommendation</th>
+                    <th>Quantity</th>
+                    <th>Reason</th>
+
+                </tr>
+
+            </thead>
+
+            <tbody id="reorder-body">
+            </tbody>
+
+        </table>
+
+
+        <!-- ==================================== -->
+        <!-- PRODUCT ANALYSIS -->
+        <!-- ==================================== -->
+
+        <h3>
+            Product Analysis
+        </h3>
+
+        <table>
+
+            <thead>
+
+                <tr>
+
+                    <th>Product</th>
+                    <th>Stock</th>
+                    <th>30-Day Avg</th>
+                    <th>7-Day Avg</th>
+                    <th>Demand Direction</th>
+                    <th>Stock Status</th>
+                    <th>Reorder</th>
+                    <th>Reorder Qty</th>
+
+                </tr>
+
+            </thead>
+
+            <tbody id="analytics-body">
+            </tbody>
+
+        </table>
+
+
+        <!-- ==================================== -->
+        <!-- OBSERVATIONS -->
+        <!-- ==================================== -->
+
+        <h3>
+            Observations
+        </h3>
+
+        <div
+            id="observations"
+            class="ai-list"
+        ></div>
+
+
+        <!-- ==================================== -->
+        <!-- RECOMMENDED ACTIONS -->
+        <!-- ==================================== -->
+
+        <h3>
+            Recommended Actions
+        </h3>
+
+        <div
+            id="actions"
+            class="ai-list"
+        ></div>
+
+
+        <!-- ==================================== -->
+        <!-- LLM INSIGHTS -->
+        <!-- ==================================== -->
+
+        <h3>
+            LLM Insights
+        </h3>
+
+        <div
+            id="llm-insights"
+            class="ai-list"
+        ></div>
+
+    </div>
+
 </div>
+
+
+<!-- ============================================ -->
+<!-- AI ANALYTICS JAVASCRIPT -->
+<!-- ============================================ -->
+
+<script>
+
+async function runAIAnalytics() {
+
+    const button =
+        document.getElementById("run-ai-button");
+
+    const loading =
+        document.getElementById("ai-loading");
+
+    const results =
+        document.getElementById("ai-results");
+
+    const errorBox =
+        document.getElementById("ai-error");
+
+
+    // --------------------------------------------
+    // Reset UI
+    // --------------------------------------------
+
+    button.disabled = true;
+
+    button.textContent =
+        "Processing...";
+
+    loading.style.display =
+        "block";
+
+    results.style.display =
+        "none";
+
+    errorBox.style.display =
+        "none";
+
+
+    try {
+
+        const response =
+            await fetch(
+                "/api/ai-analytics",
+                {
+                    method: "GET",
+                    credentials: "same-origin"
+                }
+            );
+
+
+        const result =
+            await response.json();
+
+
+        // ----------------------------------------
+        // Handle errors
+        // ----------------------------------------
+
+        if (
+            !response.ok ||
+            result.status !== "SUCCESS"
+        ) {
+
+            throw new Error(
+                result.message ||
+                "AI analytics failed."
+            );
+
+        }
+
+
+        const data =
+            result.data;
+
+
+        // ----------------------------------------
+        // Demand forecasts
+        // ----------------------------------------
+
+        const forecastBody =
+            document.getElementById(
+                "forecast-body"
+            );
+
+        forecastBody.innerHTML = "";
+
+
+        for (
+            const forecast
+            of (data.forecasts || [])
+        ) {
+
+            const row =
+                document.createElement("tr");
+
+            row.innerHTML = `
+
+                <td>
+                    ${escapeHtml(
+                        forecast.product_name
+                    )}
+                </td>
+
+                <td>
+                    ${getCurrentStock(
+                        forecast.item_id
+                    )}
+                </td>
+
+                <td>
+                    ${forecast.predicted_7_day_demand}
+                </td>
+
+                <td>
+                    ${escapeHtml(
+                        forecast.trend
+                    )}
+                </td>
+
+                <td class="reason">
+                    ${escapeHtml(
+                        forecast.reason
+                    )}
+                </td>
+
+            `;
+
+            forecastBody.appendChild(row);
+
+        }
+
+
+        // ----------------------------------------
+        // Reorder recommendations
+        // ----------------------------------------
+
+        const reorderBody =
+            document.getElementById(
+                "reorder-body"
+            );
+
+        reorderBody.innerHTML = "";
+
+
+        const reorderData =
+            data.reorder_recommendations;
+
+        // The current API returns an array. Accept the earlier wrapped
+        // shape too, so an in-flight or cached response cannot break the UI.
+        const recommendations =
+            Array.isArray(reorderData)
+                ? reorderData
+                : (
+                    Array.isArray(reorderData?.recommendations)
+                        ? reorderData.recommendations
+                        : []
+                );
+
+
+        for (
+            const recommendation
+            of recommendations
+        ) {
+
+            const row =
+                document.createElement("tr");
+
+
+            const status =
+                recommendation.reorder
+                    ? `<span class="status-low">
+                         REORDER
+                       </span>`
+                    : `<span class="status-good">
+                         DO NOT REORDER
+                       </span>`;
+
+
+            row.innerHTML = `
+
+                <td>
+                    ${escapeHtml(
+                        recommendation.product_name
+                    )}
+                </td>
+
+                <td>
+                    ${recommendation.current_stock}
+                </td>
+
+                <td>
+                    ${recommendation.predicted_7_day_demand}
+                </td>
+
+                <td>
+                    ${status}
+                </td>
+
+                <td>
+                    ${recommendation.reorder_quantity}
+                </td>
+
+                <td class="reason">
+                    ${escapeHtml(
+                        recommendation.reason
+                    )}
+                </td>
+
+            `;
+
+            reorderBody.appendChild(row);
+
+        }
+
+
+        // ----------------------------------------
+        // Product analytics
+        // ----------------------------------------
+
+        const analyticsBody =
+            document.getElementById(
+                "analytics-body"
+            );
+
+        analyticsBody.innerHTML = "";
+
+
+        const products =
+            data.analytics?.products || [];
+
+
+        for (
+            const product
+            of products
+        ) {
+
+            const row =
+                document.createElement("tr");
+
+
+            let direction =
+                escapeHtml(
+                    product.demand_direction
+                );
+
+
+            if (
+                product.demand_direction
+                === "INCREASING"
+            ) {
+
+                direction =
+                    `<span class="status-warning">
+                        INCREASING
+                     </span>`;
+
+            }
+
+
+            else if (
+                product.demand_direction
+                === "DECREASING"
+            ) {
+
+                direction =
+                    `<span class="status-good">
+                        DECREASING
+                     </span>`;
+
+            }
+
+
+            let stockStatus =
+                escapeHtml(
+                    product.stock_status
+                );
+
+
+            if (
+                product.stock_status
+                === "LOW"
+            ) {
+
+                stockStatus =
+                    `<span class="status-low">
+                        LOW
+                     </span>`;
+
+            }
+
+
+            else if (
+                product.stock_status
+                === "ADEQUATE"
+            ) {
+
+                stockStatus =
+                    `<span class="status-good">
+                        ADEQUATE
+                     </span>`;
+
+            }
+
+
+            const reorder =
+                product.reorder
+                    ? `<span class="status-low">
+                         YES
+                       </span>`
+                    : `<span class="status-good">
+                         NO
+                       </span>`;
+
+
+            row.innerHTML = `
+
+                <td>
+                    ${escapeHtml(
+                        product.product_name
+                    )}
+                </td>
+
+                <td>
+                    ${product.current_stock}
+                </td>
+
+                <td>
+                    ${product.historical_30_day_average}
+                </td>
+
+                <td>
+                    ${product.recent_7_day_average}
+                </td>
+
+                <td>
+                    ${direction}
+                </td>
+
+                <td>
+                    ${stockStatus}
+                </td>
+
+                <td>
+                    ${reorder}
+                </td>
+
+                <td>
+                    ${product.reorder_quantity}
+                </td>
+
+            `;
+
+            analyticsBody.appendChild(row);
+
+        }
+
+
+        // ----------------------------------------
+        // Observations
+        // ----------------------------------------
+
+        const observations =
+            document.getElementById(
+                "observations"
+            );
+
+        observations.innerHTML = "";
+
+
+        for (
+            const observation
+            of (
+                data.analytics?.observations
+                || []
+            )
+        ) {
+
+            const div =
+                document.createElement("div");
+
+            div.className =
+                "ai-item";
+
+            div.textContent =
+                observation;
+
+            observations.appendChild(div);
+
+        }
+
+
+        // ----------------------------------------
+        // Recommended actions
+        // ----------------------------------------
+
+        const actions =
+            document.getElementById(
+                "actions"
+            );
+
+        actions.innerHTML = "";
+
+
+        for (
+            const action
+            of (
+                data.analytics?.actions
+                || []
+            )
+        ) {
+
+            const div =
+                document.createElement("div");
+
+            div.className =
+                "ai-item";
+
+            div.textContent =
+                action;
+
+            actions.appendChild(div);
+
+        }
+
+
+        // ----------------------------------------
+        // LLM insights
+        // ----------------------------------------
+
+        const insights =
+            document.getElementById(
+                "llm-insights"
+            );
+
+        insights.innerHTML = "";
+
+        if (data.analytics?.llm_error) {
+
+            const div =
+                document.createElement("div");
+
+            div.className =
+                "ai-item";
+
+            div.textContent =
+                "Local AI insights are temporarily unavailable. "
+                + "The forecast and inventory recommendations "
+                + "above are still up to date.";
+
+            insights.appendChild(div);
+
+        }
+
+
+        for (
+            const insight
+            of (
+                data.analytics?.llm_insights
+                || []
+            )
+        ) {
+
+            const div =
+                document.createElement("div");
+
+            div.className =
+                "ai-item";
+
+            div.textContent =
+                insight;
+
+            insights.appendChild(div);
+
+        }
+
+
+        // ----------------------------------------
+        // Show results
+        // ----------------------------------------
+
+        loading.style.display =
+            "none";
+
+        results.style.display =
+            "block";
+
+        button.disabled =
+            false;
+
+        button.textContent =
+            "Run AI Analytics Again";
+
+    }
+
+
+    catch (error) {
+
+        console.error(
+            "AI analytics error:",
+            error
+        );
+
+
+        loading.style.display =
+            "none";
+
+        errorBox.textContent =
+            error.message ||
+            "Something went wrong.";
+
+        errorBox.style.display =
+            "block";
+
+        button.disabled =
+            false;
+
+        button.textContent =
+            "Try AI Analytics Again";
+
+    }
+
+}
+
+
+/* ================================================= */
+/* HELPER: CURRENT STOCK */
+/* ================================================= */
+
+function getCurrentStock(itemId) {
+
+    const inventoryRows =
+        document.querySelectorAll(
+            "input[name='item_id']"
+        );
+
+
+    for (
+        const input
+        of inventoryRows
+    ) {
+
+        if (
+            input.value === itemId
+        ) {
+
+            const row =
+                input.closest("tr");
+
+            const stockCell =
+                row?.querySelectorAll("td")[1];
+
+            if (stockCell) {
+
+                return stockCell.innerText.trim();
+
+            }
+
+        }
+
+    }
+
+
+    return "-";
+
+}
+
+
+/* ================================================= */
+/* HELPER: ESCAPE HTML */
+/* ================================================= */
+
+function escapeHtml(value) {
+
+    const div =
+        document.createElement("div");
+
+    div.textContent =
+        value ?? "";
+
+    return div.innerHTML;
+
+}
+
+</script>
+    
+
+
+
 
 </body>
 
