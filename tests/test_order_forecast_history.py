@@ -44,8 +44,9 @@ class OrderForecastHistoryTests(unittest.TestCase):
                 finally:
                     conn.close()
 
-                first_order = database.place_order(1, "item_104", 10)
-                second_order = database.place_order(1, "item_104", 2)
+                first_order = database.place_order(1, "item_104", 10, "test-order-1")
+                second_order = database.place_order(1, "item_104", 2, "test-order-2")
+                retry_order = database.place_order(1, "item_104", 10, "test-order-1")
                 product = database.get_products_with_history()[0]
 
         self.assertTrue(first_order["success"])
@@ -53,6 +54,9 @@ class OrderForecastHistoryTests(unittest.TestCase):
         self.assertEqual(product["current_stock"], 18)
         self.assertEqual(product["sales_history"][-7:], [0, 0, 0, 0, 0, 0, 12])
         self.assertEqual(sum(product["sales_history"][-7:]) / 7, 12 / 7)
+        self.assertTrue(retry_order["success"])
+        self.assertEqual(retry_order["order_id"], first_order["order_id"],)
+        self.assertEqual(product["current_stock"], 18)
 
     def test_existing_successful_orders_are_recorded_once(self):
         with tempfile.TemporaryDirectory() as directory:

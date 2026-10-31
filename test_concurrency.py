@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 
 import grpc
+import uuid
 
 import inventory_pb2
 import inventory_pb2_grpc
@@ -55,7 +56,7 @@ def get_stock(stub, token):
     )
 
 
-def place_one_order(stub, token):
+def place_one_order(stub, token, idempotency_key):
     """
     Submit one one-unit order.
     """
@@ -70,6 +71,7 @@ def place_one_order(stub, token):
                 f'"quantity":{ORDER_QUANTITY}'
                 "}"
             ),
+            idempotency_key=idempotency_key,
         ),
         timeout=20,
     )
@@ -158,6 +160,7 @@ def main():
                 place_one_order,
                 stub,
                 token,
+                str(uuid.uuid4()),
             )
             for _ in range(CONCURRENT_ORDERS)
         ]

@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0finventory.proto\x12\tinventory\"2\n\x0cLoginRequest\x12\x10\n\x08username\x18\x01 \x01(\t\x12\x10\n\x08password\x18\x02 \x01(\t\".\n\rLoginResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\r\n\x05token\x18\x02 \x01(\t\"\x1e\n\rLogoutRequest\x12\r\n\x05token\x18\x01 \x01(\t\"1\n\x0eStatusResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\"8\n\x0bPostRequest\x12\r\n\x05token\x18\x01 \x01(\t\x12\x0c\n\x04type\x18\x02 \x01(\t\x12\x0c\n\x04\x64\x61ta\x18\x03 \x01(\t\"9\n\nGetRequest\x12\r\n\x05token\x18\x01 \x01(\t\x12\x0c\n\x04type\x18\x02 \x01(\t\x12\x0e\n\x06params\x18\x03 \x01(\t\"$\n\x08\x44\x61taItem\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0c\n\x04\x64\x61ta\x18\x02 \x01(\t\"A\n\x0bGetResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\"\n\x05items\x18\x02 \x03(\x0b\x32\x13.inventory.DataItem\"G\n\x0f\x42usinessRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x0f\n\x07payload\x18\x02 \x01(\t\x12\x0f\n\x07\x63ontext\x18\x03 \x01(\t\"@\n\nLLMRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\r\n\x05query\x18\x02 \x01(\t\x12\x0f\n\x07\x63ontext\x18\x03 \x01(\t\"7\n\x11LLMAnswerResponse\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x0e\n\x06\x61nswer\x18\x02 \x01(\t2\xfb\x01\n\rClientService\x12:\n\x05login\x12\x17.inventory.LoginRequest\x1a\x18.inventory.LoginResponse\x12=\n\x06logout\x12\x18.inventory.LogoutRequest\x1a\x19.inventory.StatusResponse\x12\x39\n\x04post\x12\x16.inventory.PostRequest\x1a\x19.inventory.StatusResponse\x12\x34\n\x03get\x12\x15.inventory.GetRequest\x1a\x16.inventory.GetResponse2c\n\x10\x41ppServerService\x12O\n\x16processBusinessRequest\x12\x1a.inventory.BusinessRequest\x1a\x19.inventory.StatusResponse2Q\n\nLLMService\x12\x43\n\x0cgetLLMAnswer\x12\x15.inventory.LLMRequest\x1a\x1c.inventory.LLMAnswerResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0finventory.proto\x12\tinventory\"2\n\x0cLoginRequest\x12\x10\n\x08username\x18\x01 \x01(\t\x12\x10\n\x08password\x18\x02 \x01(\t\".\n\rLoginResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\r\n\x05token\x18\x02 \x01(\t\"\x1e\n\rLogoutRequest\x12\r\n\x05token\x18\x01 \x01(\t\"1\n\x0eStatusResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\"Q\n\x0bPostRequest\x12\r\n\x05token\x18\x01 \x01(\t\x12\x0c\n\x04type\x18\x02 \x01(\t\x12\x0c\n\x04\x64\x61ta\x18\x03 \x01(\t\x12\x17\n\x0fidempotency_key\x18\x04 \x01(\t\"9\n\nGetRequest\x12\r\n\x05token\x18\x01 \x01(\t\x12\x0c\n\x04type\x18\x02 \x01(\t\x12\x0e\n\x06params\x18\x03 \x01(\t\"$\n\x08\x44\x61taItem\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0c\n\x04\x64\x61ta\x18\x02 \x01(\t\"A\n\x0bGetResponse\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\"\n\x05items\x18\x02 \x03(\x0b\x32\x13.inventory.DataItem\"G\n\x0f\x42usinessRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x0f\n\x07payload\x18\x02 \x01(\t\x12\x0f\n\x07\x63ontext\x18\x03 \x01(\t\"@\n\nLLMRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\r\n\x05query\x18\x02 \x01(\t\x12\x0f\n\x07\x63ontext\x18\x03 \x01(\t\"7\n\x11LLMAnswerResponse\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x0e\n\x06\x61nswer\x18\x02 \x01(\t2\xfb\x01\n\rClientService\x12:\n\x05login\x12\x17.inventory.LoginRequest\x1a\x18.inventory.LoginResponse\x12=\n\x06logout\x12\x18.inventory.LogoutRequest\x1a\x19.inventory.StatusResponse\x12\x39\n\x04post\x12\x16.inventory.PostRequest\x1a\x19.inventory.StatusResponse\x12\x34\n\x03get\x12\x15.inventory.GetRequest\x1a\x16.inventory.GetResponse2c\n\x10\x41ppServerService\x12O\n\x16processBusinessRequest\x12\x1a.inventory.BusinessRequest\x1a\x19.inventory.StatusResponse2Q\n\nLLMService\x12\x43\n\x0cgetLLMAnswer\x12\x15.inventory.LLMRequest\x1a\x1c.inventory.LLMAnswerResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -40,23 +40,23 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_STATUSRESPONSE']._serialized_start=162
   _globals['_STATUSRESPONSE']._serialized_end=211
   _globals['_POSTREQUEST']._serialized_start=213
-  _globals['_POSTREQUEST']._serialized_end=269
-  _globals['_GETREQUEST']._serialized_start=271
-  _globals['_GETREQUEST']._serialized_end=328
-  _globals['_DATAITEM']._serialized_start=330
-  _globals['_DATAITEM']._serialized_end=366
-  _globals['_GETRESPONSE']._serialized_start=368
-  _globals['_GETRESPONSE']._serialized_end=433
-  _globals['_BUSINESSREQUEST']._serialized_start=435
-  _globals['_BUSINESSREQUEST']._serialized_end=506
-  _globals['_LLMREQUEST']._serialized_start=508
-  _globals['_LLMREQUEST']._serialized_end=572
-  _globals['_LLMANSWERRESPONSE']._serialized_start=574
-  _globals['_LLMANSWERRESPONSE']._serialized_end=629
-  _globals['_CLIENTSERVICE']._serialized_start=632
-  _globals['_CLIENTSERVICE']._serialized_end=883
-  _globals['_APPSERVERSERVICE']._serialized_start=885
-  _globals['_APPSERVERSERVICE']._serialized_end=984
-  _globals['_LLMSERVICE']._serialized_start=986
-  _globals['_LLMSERVICE']._serialized_end=1067
+  _globals['_POSTREQUEST']._serialized_end=294
+  _globals['_GETREQUEST']._serialized_start=296
+  _globals['_GETREQUEST']._serialized_end=353
+  _globals['_DATAITEM']._serialized_start=355
+  _globals['_DATAITEM']._serialized_end=391
+  _globals['_GETRESPONSE']._serialized_start=393
+  _globals['_GETRESPONSE']._serialized_end=458
+  _globals['_BUSINESSREQUEST']._serialized_start=460
+  _globals['_BUSINESSREQUEST']._serialized_end=531
+  _globals['_LLMREQUEST']._serialized_start=533
+  _globals['_LLMREQUEST']._serialized_end=597
+  _globals['_LLMANSWERRESPONSE']._serialized_start=599
+  _globals['_LLMANSWERRESPONSE']._serialized_end=654
+  _globals['_CLIENTSERVICE']._serialized_start=657
+  _globals['_CLIENTSERVICE']._serialized_end=908
+  _globals['_APPSERVERSERVICE']._serialized_start=910
+  _globals['_APPSERVERSERVICE']._serialized_end=1009
+  _globals['_LLMSERVICE']._serialized_start=1011
+  _globals['_LLMSERVICE']._serialized_end=1092
 # @@protoc_insertion_point(module_scope)

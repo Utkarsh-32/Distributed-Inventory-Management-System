@@ -2,8 +2,9 @@ import json
 from urllib.parse import quote_plus
 
 import grpc
+import uuid
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
@@ -541,6 +542,7 @@ def place_order(
     request: Request,
     item_id: str = Form(...),
     quantity: int = Form(...),
+    idempotency_key: str = Form(...),
 ):
 
     token = get_session_token(request)
@@ -554,6 +556,14 @@ def place_order(
 
     stub = get_stub()
 
+    idempotency_key = idempotency_key.strip()
+
+    if not idempotency_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Idempotency key is required.",
+        )
+
     # Build JSON safely.
     response = stub.post(
         inventory_pb2.PostRequest(
@@ -565,6 +575,7 @@ def place_order(
                     "quantity": quantity,
                 }
             ),
+            idempotency_key=idempotency_key,
         ),
         timeout=10,
     )

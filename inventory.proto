@@ -95,6 +95,7 @@ message PostRequest {
     // etc.
     string type = 2;
 
+
     // Operation-specific payload.
     //
     // For an order we will send JSON such as:
@@ -104,6 +105,8 @@ message PostRequest {
     //     "quantity": 4
     // }
     string data = 3;
+
+    string idempotency_key = 4;
 }
 
 

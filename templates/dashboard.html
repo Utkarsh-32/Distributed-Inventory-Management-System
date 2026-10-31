@@ -142,6 +142,12 @@
                             >
 
                             <input
+                                type="hidden"
+                                name="idempotency_key"
+                                class="idempotency_key"
+                            >
+
+                            <input
                                 type="number"
                                 name="quantity"
                                 min="1"
@@ -1001,7 +1007,19 @@ function escapeHtml(value) {
 </script>
     
 
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    const keyFields = document.querySelectorAll(
+        ".idempotency_key"
+    );
 
+    keyFields.forEach(function (keyField) {
+        if (!keyField.value) {
+            keyField.value = crypto.randomUUID();
+        }
+    });
+});
+</script>
 
 
 </body>

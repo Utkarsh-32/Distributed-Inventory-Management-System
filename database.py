@@ -131,10 +131,12 @@ def initialize_database():
             quantity INTEGER NOT NULL CHECK (quantity > 0),
             status TEXT NOT NULL,
             created_at TEXT NOT NULL,
+            idempotency_key TEXT,
             FOREIGN KEY (user_id)
                 REFERENCES users(id),
             FOREIGN KEY (item_id)
-                REFERENCES products(item_id)
+                REFERENCES products(item_id),
+            UNIQUE(user_id, idempotency_key)
         );
 
         CREATE INDEX IF NOT EXISTS idx_sessions_user_id
@@ -153,6 +155,7 @@ def initialize_database():
 
     _ensure_sales_history_tracking_column(conn)
     _record_legacy_orders_in_sales_history(conn)
+    _ensure_idempotency_key_column(conn)
 
     conn.commit()
     conn.close()
@@ -394,7 +397,7 @@ def get_all_products():
         conn.close()
 
 
-def place_order(user_id: int, item_id: str, quantity: int):
+def place_order(user_id: int, item_id: str, quantity: int, idempotency_key: str):
     """
     Atomically place an order.
 
@@ -418,6 +421,26 @@ def place_order(user_id: int, item_id: str, quantity: int):
         # only one writer can perform the stock-changing
         # transaction at a time.
         conn.execute("BEGIN IMMEDIATE")
+
+        existing_order = conn.execute(
+                    """
+                    SELECT id, status
+                    FROM orders
+                    WHERE user_id = ?
+                    AND idempotency_key = ?
+                    """,
+                    (user_id, idempotency_key),
+                ).fetchone()
+        
+        if existing_order is not None:
+            conn.rollback()
+        
+            return {
+                        "success": True,
+                        "status": existing_order["status"],
+                        "message": f"Order #{existing_order['id']} was already processed.",
+                        "order_id": existing_order["id"],
+                }
 
         product = conn.execute(
             """
@@ -452,6 +475,7 @@ def place_order(user_id: int, item_id: str, quantity: int):
                 ),
             }
 
+
         # Decrease the stock.
         conn.execute(
             """
@@ -483,10 +507,11 @@ def place_order(user_id: int, item_id: str, quantity: int):
                     quantity,
                     status,
                     created_at,
-                    sales_history_recorded
+                    sales_history_recorded,
+                    idempotency_key
                 )
             VALUES
-                (?, ?, ?, ?, ?, 1)
+                (?, ?, ?, ?, ?, 1, ?)
             """,
             (
                 user_id,
@@ -494,6 +519,7 @@ def place_order(user_id: int, item_id: str, quantity: int):
                 quantity,
                 "SUCCESS",
                 utc_now(),
+                idempotency_key,
             ),
         )
 
@@ -605,6 +631,32 @@ def get_products_with_history():
         )
 
     return products
+
+def _ensure_idempotency_key_column(conn):
+    columns = conn.execute(
+        "PRAGMA table_info(orders)"
+    ).fetchall()
+
+    if not any(
+        column["name"] == "idempotency_key"
+        for column in columns
+    ):
+        conn.execute(
+            """
+            ALTER TABLE orders
+            ADD COLUMN idempotency_key TEXT
+            """
+        )
+
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS
+            idx_orders_user_id_idempotency_key
+        ON orders(user_id, idempotency_key)
+        WHERE idempotency_key IS NOT NULL
+        AND idempotency_key <> ''
+        """
+    )
 
 
 # ============================================================

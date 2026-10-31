@@ -324,6 +324,18 @@ class ClientServiceServicer(
             )
 
         # --------------------------------------------------------
+        #  Idempotency Key
+        # --------------------------------------------------------
+
+        key = request.idempotency_key.strip()
+
+        if not key:
+            return inventory_pb2.StatusResponse(
+                status="INVALID_REQUEST",
+                message="Idempotency key required.",
+            )
+
+        # --------------------------------------------------------
         # 2. Determine operation
         # --------------------------------------------------------
 
@@ -367,6 +379,7 @@ class ClientServiceServicer(
                 user_id=user_id,
                 item_id=item_id,
                 quantity=quantity,
+                idempotency_key=key,
             )
 
         except Exception as exc:
