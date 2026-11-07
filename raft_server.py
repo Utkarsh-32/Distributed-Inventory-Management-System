@@ -2,6 +2,7 @@ import raft_pb2, raft_pb2_grpc
 import grpc
 from concurrent import futures
 from raft_node import RaftNode
+import argparse
 
 class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
     def __init__(self, node):
@@ -16,15 +17,20 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
         return raft_pb2.HeartbeatResponse(term=self.node.current_term, accepted=accepted)
 
 
-def serve():
-    node2 = RaftNode(2, "localhost:50062", ["localhost:50061"])
+def serve(node_id, address, peers):
+    node = RaftNode(node_id=node_id, address=address, peers=peers)
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=1))
-    servicer = RaftServicer(node2)
+    servicer = RaftServicer(node)
     raft_pb2_grpc.add_RaftServiceServicer_to_server(servicer=servicer, server=server)
-    server.add_insecure_port(node2.address)
+    server.add_insecure_port(node.address)
     server.start()
-    print("node2 listening")
+    print("node_id:", node.node_id, "address:", node.address)
     server.wait_for_termination()
 
 if __name__ == "__main__":
-    serve()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--node-id", type=int, required=True)
+    parser.add_argument("--address", required=True)
+    parser.add_argument("--peers", nargs="+", required=True)
+    args = parser.parse_args()
+    serve(args.node_id, args.address, args.peers)
