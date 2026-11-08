@@ -3,18 +3,21 @@ import grpc
 from concurrent import futures
 from raft_node import RaftNode
 import argparse
+import threading
 
 class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
     def __init__(self, node):
         self.node = node
 
     def RequestVote(self, request, context):
-        granted = self.node.request_vote(request.candidate_id, request.term)
-        return raft_pb2.VoteResponse(term=self.node.current_term, vote_granted=granted)
+        with self.node.lock:
+            granted = self.node.request_vote(request.candidate_id, request.term)
+            return raft_pb2.VoteResponse(term=self.node.current_term, vote_granted=granted)
 
     def Heartbeat(self, request, context):
-        accepted = self.node.receive_heartbeat(request.leader_id, request.term)
-        return raft_pb2.HeartbeatResponse(term=self.node.current_term, accepted=accepted)
+        with self.node.lock:
+            accepted = self.node.receive_heartbeat(request.leader_id, request.term)
+            return raft_pb2.HeartbeatResponse(term=self.node.current_term, accepted=accepted)
 
 
 def serve(node_id, address, peers):
@@ -24,7 +27,9 @@ def serve(node_id, address, peers):
     raft_pb2_grpc.add_RaftServiceServicer_to_server(servicer=servicer, server=server)
     server.add_insecure_port(node.address)
     server.start()
+    timer_thread = threading.Thread(target=node.run_timer, daemon=True)
     print("node_id:", node.node_id, "address:", node.address)
+    timer_thread.start()
     server.wait_for_termination()
 
 if __name__ == "__main__":
