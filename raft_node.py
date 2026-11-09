@@ -1,6 +1,8 @@
 import time
 import random
 import threading
+import grpc
+import raft_pb2, raft_pb2_grpc
 
 class RaftNode:
 
@@ -23,6 +25,7 @@ class RaftNode:
             self.leader_id = None
             self.reset_election_timer()
             print(self.node_id, self.role, "current term:", self.current_term, "voted_for:", self.voted_for)
+            return self.current_term
 
     def become_follower(self, new_term):
         with self.lock:
@@ -68,10 +71,78 @@ class RaftNode:
             if (self.role == "leader"):
                 return
             if (time.monotonic() >= self.election_deadline):
-                self.start_election()
+                return self.start_election()
 
     def run_timer(self):
+        next_heartbeat = 0
         while True:
-            self.check_election_timeout()
+            election_term = self.check_election_timeout()
+            if election_term is not None:
+                self.collect_votes(election_term)
+            if time.monotonic() >= next_heartbeat:
+                self.broadcast_heartbeats()
+                next_heartbeat = time.monotonic() + 0.5
             time.sleep(0.1)
-             
+
+    def send_vote_request(self, peer_address, election_term):
+        try:
+            with grpc.insecure_channel(peer_address) as channel:
+                stub = raft_pb2_grpc.RaftServiceStub(channel=channel)
+                request = raft_pb2.VoteRequest(candidate_id=self.node_id, term=election_term)
+                response = stub.RequestVote(request, timeout=1)
+                return response
+        except grpc.RpcError:
+            return None
+
+    def collect_votes(self, election_term):
+        votes = 1
+        votes_needed = (len(self.peers)+1) // 2 + 1
+        for peer in self.peers:
+            reply = self.send_vote_request(peer_address=peer, election_term=election_term)
+            if reply is None:
+                continue
+            with self.lock:
+                if reply.term > self.current_term:
+                    self.become_follower(reply.term)
+                    return
+                if self.role != "candidate" or self.current_term != election_term:
+                    return
+                if reply.term == election_term and reply.vote_granted:
+                    votes += 1
+                if votes >= votes_needed:
+                    self.leader_id = self.node_id
+                    self.role = "leader"
+                    print(self.node_id, "won the election in term", self.current_term)
+                    return
+
+    def send_heartbeat(self, peer_address, leader_term):
+        try:
+            with grpc.insecure_channel(peer_address) as channel:
+                stub = raft_pb2_grpc.RaftServiceStub(channel=channel)
+                request = raft_pb2.HeartbeatRequest(leader_id=self.node_id, term=leader_term)
+                response = stub.Heartbeat(request=request, timeout=0.5)
+                return response
+        except grpc.RpcError:
+            return None
+
+    def broadcast_heartbeats(self):
+        with self.lock:
+            if self.role != "leader":
+                return
+            leader_term = self.current_term
+        for peer in self.peers:
+            with self.lock:
+                if self.role != "leader" or self.current_term != leader_term:
+                    return
+            reply = self.send_heartbeat(peer_address=peer, leader_term=leader_term)
+            if reply is not None:
+                with self.lock:
+                    if reply.term > self.current_term:
+                        self.become_follower(reply.term)
+                        return
+            
+
+                
+
+
+
