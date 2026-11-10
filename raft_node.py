@@ -3,6 +3,9 @@ import random
 import threading
 import grpc
 import raft_pb2, raft_pb2_grpc
+import json
+from pathlib import Path
+import os
 
 class RaftNode:
 
@@ -15,6 +18,10 @@ class RaftNode:
         self.current_term = 0
         self.leader_id = None
         self.lock = threading.RLock()
+        data_dir = Path("data")
+        data_dir.mkdir(parents=True, exist_ok=True)
+        self.state_file = data_dir / f"node_{self.node_id}_state.json"
+        self.load_state()
         self.reset_election_timer()
 
     def start_election(self):
@@ -24,6 +31,7 @@ class RaftNode:
             self.voted_for = self.node_id
             self.leader_id = None
             self.reset_election_timer()
+            self.save_state()
             print(self.node_id, self.role, "current term:", self.current_term, "voted_for:", self.voted_for)
             return self.current_term
 
@@ -34,7 +42,8 @@ class RaftNode:
                 return
             if (self.current_term < new_term):
                 self.voted_for = None
-            self.current_term = new_term
+                self.current_term = new_term
+                self.save_state()
             self.role = "follower"
             self.leader_id = None
             print(self.node_id, self.role, self.voted_for, self.current_term)
@@ -47,6 +56,7 @@ class RaftNode:
                 self.become_follower(candidate_term)
             if (self.voted_for is None or self.voted_for == candidate_id):
                 self.voted_for = candidate_id
+                self.save_state()
                 self.reset_election_timer()
                 print("voted_for", self.voted_for)
                 return True
@@ -142,7 +152,47 @@ class RaftNode:
                         return
             
 
-                
+    def save_state(self):
+        with self.lock:
+            try:
+                state = {
+                    "current_term" : self.current_term,
+                    "voted_for" : self.voted_for
+                }
+                temp_file = self.state_file.with_suffix(".tmp")
+
+                with open(temp_file, "w") as f:
+                    json.dump(state, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+
+                os.replace(temp_file, self.state_file)
+
+                dir_fd = os.open(self.state_file.parent, os.O_RDONLY)
+
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except OSError as error:
+                print("node_id:", self.node_id, "error:", error, flush=True)
+                os._exit(1)
+
+    def load_state(self):
+        with self.lock:
+            if not self.state_file.exists():
+                return
+            with open(self.state_file, "r") as f:
+                state = json.load(f)
+            if not isinstance(state, dict):
+                raise ValueError("Value must be a JSON object.")
+            current_term = state["current_term"]
+            voted_for = state["voted_for"]
+            if (type(current_term) is int and current_term >= 0) and (voted_for is None or type(voted_for) is int):
+                self.current_term = current_term
+                self.voted_for = voted_for
+            else:
+                raise ValueError("Failed to read the values")
 
 
 
