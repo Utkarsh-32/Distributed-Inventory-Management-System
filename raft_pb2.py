@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\nraft.proto\"1\n\x0bVoteRequest\x12\x14\n\x0c\x63\x61ndidate_id\x18\x01 \x01(\x05\x12\x0c\n\x04term\x18\x02 \x01(\x03\"2\n\x0cVoteResponse\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x14\n\x0cvote_granted\x18\x02 \x01(\x08\"3\n\x10HeartbeatRequest\x12\x11\n\tleader_id\x18\x01 \x01(\x05\x12\x0c\n\x04term\x18\x02 \x01(\x03\"3\n\x11HeartbeatResponse\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x02 \x01(\x08\x32m\n\x0bRaftService\x12*\n\x0bRequestVote\x12\x0c.VoteRequest\x1a\r.VoteResponse\x12\x32\n\tHeartbeat\x12\x11.HeartbeatRequest\x1a\x12.HeartbeatResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\nraft.proto\"`\n\x0bVoteRequest\x12\x14\n\x0c\x63\x61ndidate_id\x18\x01 \x01(\x05\x12\x0c\n\x04term\x18\x02 \x01(\x03\x12\x16\n\x0elast_log_index\x18\x03 \x01(\x03\x12\x15\n\rlast_log_term\x18\x04 \x01(\x03\"2\n\x0cVoteResponse\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x14\n\x0cvote_granted\x18\x02 \x01(\x08\"3\n\x10HeartbeatRequest\x12\x11\n\tleader_id\x18\x01 \x01(\x05\x12\x0c\n\x04term\x18\x02 \x01(\x03\"3\n\x11HeartbeatResponse\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x02 \x01(\x08\x32m\n\x0bRaftService\x12*\n\x0bRequestVote\x12\x0c.VoteRequest\x1a\r.VoteResponse\x12\x32\n\tHeartbeat\x12\x11.HeartbeatRequest\x1a\x12.HeartbeatResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -32,13 +32,13 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'raft_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_VOTEREQUEST']._serialized_start=14
-  _globals['_VOTEREQUEST']._serialized_end=63
-  _globals['_VOTERESPONSE']._serialized_start=65
-  _globals['_VOTERESPONSE']._serialized_end=115
-  _globals['_HEARTBEATREQUEST']._serialized_start=117
-  _globals['_HEARTBEATREQUEST']._serialized_end=168
-  _globals['_HEARTBEATRESPONSE']._serialized_start=170
-  _globals['_HEARTBEATRESPONSE']._serialized_end=221
-  _globals['_RAFTSERVICE']._serialized_start=223
-  _globals['_RAFTSERVICE']._serialized_end=332
+  _globals['_VOTEREQUEST']._serialized_end=110
+  _globals['_VOTERESPONSE']._serialized_start=112
+  _globals['_VOTERESPONSE']._serialized_end=162
+  _globals['_HEARTBEATREQUEST']._serialized_start=164
+  _globals['_HEARTBEATREQUEST']._serialized_end=215
+  _globals['_HEARTBEATRESPONSE']._serialized_start=217
+  _globals['_HEARTBEATRESPONSE']._serialized_end=268
+  _globals['_RAFTSERVICE']._serialized_start=270
+  _globals['_RAFTSERVICE']._serialized_end=379
 # @@protoc_insertion_point(module_scope)

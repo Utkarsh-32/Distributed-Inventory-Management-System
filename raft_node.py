@@ -23,6 +23,8 @@ class RaftNode:
         self.state_file = data_dir / f"node_{self.node_id}_state.json"
         self.load_state()
         self.reset_election_timer()
+        self.last_log_term = 0
+        self.last_log_index = 0
 
     def start_election(self):
         with self.lock:
@@ -48,13 +50,15 @@ class RaftNode:
             self.leader_id = None
             print(self.node_id, self.role, self.voted_for, self.current_term)
 
-    def request_vote(self, candidate_id, candidate_term):
+    def request_vote(self, candidate_id, candidate_term, candidate_last_term, candidate_last_index):
         with self.lock:
             if (candidate_term < self.current_term):
                 return False
             if (candidate_term > self.current_term):
                 self.become_follower(candidate_term)
             if (self.voted_for is None or self.voted_for == candidate_id):
+                if not self.is_log_up_to_date(candidate_last_term, candidate_last_index, self.last_log_term, self.last_log_index):
+                    return False
                 self.voted_for = candidate_id
                 self.save_state()
                 self.reset_election_timer()
@@ -98,7 +102,7 @@ class RaftNode:
         try:
             with grpc.insecure_channel(peer_address) as channel:
                 stub = raft_pb2_grpc.RaftServiceStub(channel=channel)
-                request = raft_pb2.VoteRequest(candidate_id=self.node_id, term=election_term)
+                request = raft_pb2.VoteRequest(candidate_id=self.node_id, term=election_term, last_log_index=self.last_log_index, last_log_term=self.last_log_term)
                 response = stub.RequestVote(request, timeout=1)
                 return response
         except grpc.RpcError:
@@ -193,6 +197,17 @@ class RaftNode:
                 self.voted_for = voted_for
             else:
                 raise ValueError("Failed to read the values")
+
+    def is_log_up_to_date(self, candidate_last_term, candidate_last_index, local_last_term, local_last_index):
+        if candidate_last_term > local_last_term:
+            return True
+        if candidate_last_term < local_last_term:
+            return False
+        if candidate_last_index >= local_last_index:
+            return True
+        if candidate_last_index < local_last_index:
+            return False
+        
 
 
 

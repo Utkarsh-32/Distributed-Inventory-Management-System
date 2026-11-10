@@ -11,7 +11,12 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
 
     def RequestVote(self, request, context):
         with self.node.lock:
-            granted = self.node.request_vote(request.candidate_id, request.term)
+            granted = self.node.request_vote(
+                candidate_id=request.candidate_id, 
+                candidate_term=request.term, 
+                candidate_last_term=request.last_log_term, 
+                candidate_last_index=request.last_log_index
+            )
             return raft_pb2.VoteResponse(term=self.node.current_term, vote_granted=granted)
 
     def Heartbeat(self, request, context):
