@@ -12,7 +12,10 @@ import inventory_pb2
 import inventory_pb2_grpc
 
 
-APP_SERVER_ADDRESS = "localhost:50052"
+APP_SERVER_ADDRESS = os.getenv(
+    "APP_SERVER_ADDRESS",
+    "localhost:50052"
+)
 
 LLM_SERVER_ADDRESS = "localhost:50051"
 # Qualitative insight requests are deliberately short, but generating a
