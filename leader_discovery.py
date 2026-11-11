@@ -37,11 +37,15 @@ def find_leader(addresses):
             and response.HasField("leader_id")
             and response.node_id == response.leader_id
         ):
-            leaders.append(address)
+            leaders.append(response)
 
     if len(leaders) == 1:
-        print("Leader address:", leaders[0])
-        return leaders[0]
+        app_address = leaders[0].app_address
+        if app_address:
+            print("Leader inventory address:", app_address)
+            return app_address
+        print("Leader has no inventory address")
+        return None
     elif not leaders:
         print("No leader elected yet")
     else:
