@@ -42,8 +42,15 @@ def find_leader(addresses):
     if len(leaders) == 1:
         app_address = leaders[0].app_address
         if app_address:
-            print("Leader inventory address:", app_address)
-            return app_address
+            distinct = []
+            for _, response in responses:
+                if (response.term == leaders[0].term and
+                    response.leader_id == leaders[0].leader_id
+                ):
+                    distinct.append(response.node_id)
+            if len(distinct) >= 2:
+                print("Leader inventory address:", app_address)
+                return app_address
         print("Leader has no inventory address")
         return None
     elif not leaders:
