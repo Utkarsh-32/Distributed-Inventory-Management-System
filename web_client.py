@@ -12,12 +12,16 @@ from fastapi.staticfiles import StaticFiles
 import inventory_pb2
 import inventory_pb2_grpc
 
+from leader_discovery import find_leader
+
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
 APP_SERVER_ADDRESS = "localhost:50052"
+
+RAFT_ADDRESSES = ["localhost:50061","localhost:50062","localhost:50063"]
 
 
 # ============================================================
@@ -49,9 +53,11 @@ def get_stub():
     """
     Create a gRPC client stub for the Application Server.
     """
-
+    leader_address = find_leader(RAFT_ADDRESSES)
+    if leader_address is None:
+        raise HTTPException(status_code=503, detail="Leader election in progress. Please try again.")
     channel = grpc.insecure_channel(
-        APP_SERVER_ADDRESS
+        leader_address
     )
 
     return inventory_pb2_grpc.ClientServiceStub(
