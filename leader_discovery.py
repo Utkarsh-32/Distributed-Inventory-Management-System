@@ -29,6 +29,7 @@ def find_leader(addresses):
 
     highest_term = max(response.term for _, response in responses)
 
+    leaders = []
     for address, response in responses:
         if (
             response.term == highest_term
@@ -36,10 +37,16 @@ def find_leader(addresses):
             and response.HasField("leader_id")
             and response.node_id == response.leader_id
         ):
-            print("Leader address:", address)
-            return address
+            leaders.append(address)
 
-    print("No leader elected yet")
+    if len(leaders) == 1:
+        print("Leader address:", leaders[0])
+        return leaders[0]
+    elif not leaders:
+        print("No leader elected yet")
+    else:
+        print("ERROR: Multiple leaders elected", leaders)
+
     return None
 
 if __name__ == "__main__":

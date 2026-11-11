@@ -6,8 +6,9 @@ import argparse
 import threading
 
 class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
-    def __init__(self, node):
+    def __init__(self, node, app_address):
         self.node = node
+        self.app_address = app_address
 
     def RequestVote(self, request, context):
         with self.node.lock:
@@ -26,16 +27,21 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
 
     def GetStatus(self, request, context):
         with self.node.lock:
-            response = raft_pb2.StatusResponse(node_id=self.node.node_id, role=self.node.role, term=self.node.current_term)
+            response = raft_pb2.StatusResponse(
+                node_id=self.node.node_id, 
+                role=self.node.role, 
+                term=self.node.current_term,
+                app_address=self.app_address
+            )
             if self.node.leader_id is not None:
                 response.leader_id = self.node.leader_id
             return response
 
 
-def serve(node_id, address, peers):
+def serve(node_id, address, peers, app_address):
     node = RaftNode(node_id=node_id, address=address, peers=peers)
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=1))
-    servicer = RaftServicer(node)
+    servicer = RaftServicer(node, app_address)
     raft_pb2_grpc.add_RaftServiceServicer_to_server(servicer=servicer, server=server)
     server.add_insecure_port(node.address)
     server.start()
@@ -49,5 +55,6 @@ if __name__ == "__main__":
     parser.add_argument("--node-id", type=int, required=True)
     parser.add_argument("--address", required=True)
     parser.add_argument("--peers", nargs="+", required=True)
+    parser.add_argument("--app-address", type=str, required=True)
     args = parser.parse_args()
-    serve(args.node_id, args.address, args.peers)
+    serve(args.node_id, args.address, args.peers, args.app_address)

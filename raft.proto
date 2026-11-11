@@ -37,6 +37,7 @@ message StatusResponse {
     string role = 2;
     int64 term = 3;
     optional int32 leader_id = 4;
+    string app_address = 5;
 }
 
 

@@ -16,7 +16,7 @@ print(response1.term, response1.accepted)
 
 response2 = stub.GetStatus(raft_pb2.StatusRequest(), timeout=1)
 
-print(response2.node_id, response2.role, response2.term)
+print(response2.node_id, response2.role, response2.term, response2.app_address)
 
 if response2.HasField("leader_id"):
     print("leader_id:", response2.leader_id)
