@@ -15,6 +15,7 @@ message VoteResponse {
 service RaftService {
     rpc RequestVote(VoteRequest) returns (VoteResponse);
     rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+    rpc GetStatus(StatusRequest) returns (StatusResponse);
 }
 
 message HeartbeatRequest {
@@ -25,6 +26,17 @@ message HeartbeatRequest {
 message HeartbeatResponse {
     int64 term = 1;
     bool accepted = 2;
+}
+
+message StatusRequest {
+
+}
+
+message StatusResponse {
+    int32 node_id = 1;
+    string role = 2;
+    int64 term = 3;
+    optional int32 leader_id = 4;
 }
 
 

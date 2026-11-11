@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\nraft.proto\"`\n\x0bVoteRequest\x12\x14\n\x0c\x63\x61ndidate_id\x18\x01 \x01(\x05\x12\x0c\n\x04term\x18\x02 \x01(\x03\x12\x16\n\x0elast_log_index\x18\x03 \x01(\x03\x12\x15\n\rlast_log_term\x18\x04 \x01(\x03\"2\n\x0cVoteResponse\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x14\n\x0cvote_granted\x18\x02 \x01(\x08\"3\n\x10HeartbeatRequest\x12\x11\n\tleader_id\x18\x01 \x01(\x05\x12\x0c\n\x04term\x18\x02 \x01(\x03\"3\n\x11HeartbeatResponse\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x02 \x01(\x08\x32m\n\x0bRaftService\x12*\n\x0bRequestVote\x12\x0c.VoteRequest\x1a\r.VoteResponse\x12\x32\n\tHeartbeat\x12\x11.HeartbeatRequest\x1a\x12.HeartbeatResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\nraft.proto\"`\n\x0bVoteRequest\x12\x14\n\x0c\x63\x61ndidate_id\x18\x01 \x01(\x05\x12\x0c\n\x04term\x18\x02 \x01(\x03\x12\x16\n\x0elast_log_index\x18\x03 \x01(\x03\x12\x15\n\rlast_log_term\x18\x04 \x01(\x03\"2\n\x0cVoteResponse\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x14\n\x0cvote_granted\x18\x02 \x01(\x08\"3\n\x10HeartbeatRequest\x12\x11\n\tleader_id\x18\x01 \x01(\x05\x12\x0c\n\x04term\x18\x02 \x01(\x03\"3\n\x11HeartbeatResponse\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x02 \x01(\x08\"\x0f\n\rStatusRequest\"c\n\x0eStatusResponse\x12\x0f\n\x07node_id\x18\x01 \x01(\x05\x12\x0c\n\x04role\x18\x02 \x01(\t\x12\x0c\n\x04term\x18\x03 \x01(\x03\x12\x16\n\tleader_id\x18\x04 \x01(\x05H\x00\x88\x01\x01\x42\x0c\n\n_leader_id2\x9b\x01\n\x0bRaftService\x12*\n\x0bRequestVote\x12\x0c.VoteRequest\x1a\r.VoteResponse\x12\x32\n\tHeartbeat\x12\x11.HeartbeatRequest\x1a\x12.HeartbeatResponse\x12,\n\tGetStatus\x12\x0e.StatusRequest\x1a\x0f.StatusResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -39,6 +39,10 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_HEARTBEATREQUEST']._serialized_end=215
   _globals['_HEARTBEATRESPONSE']._serialized_start=217
   _globals['_HEARTBEATRESPONSE']._serialized_end=268
-  _globals['_RAFTSERVICE']._serialized_start=270
-  _globals['_RAFTSERVICE']._serialized_end=379
+  _globals['_STATUSREQUEST']._serialized_start=270
+  _globals['_STATUSREQUEST']._serialized_end=285
+  _globals['_STATUSRESPONSE']._serialized_start=287
+  _globals['_STATUSRESPONSE']._serialized_end=386
+  _globals['_RAFTSERVICE']._serialized_start=389
+  _globals['_RAFTSERVICE']._serialized_end=544
 # @@protoc_insertion_point(module_scope)

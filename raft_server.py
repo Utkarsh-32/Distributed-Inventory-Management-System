@@ -24,6 +24,13 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
             accepted = self.node.receive_heartbeat(request.leader_id, request.term)
             return raft_pb2.HeartbeatResponse(term=self.node.current_term, accepted=accepted)
 
+    def GetStatus(self, request, context):
+        with self.node.lock:
+            response = raft_pb2.StatusResponse(node_id=self.node.node_id, role=self.node.role, term=self.node.current_term)
+            if self.node.leader_id is not None:
+                response.leader_id = self.node.leader_id
+            return response
+
 
 def serve(node_id, address, peers):
     node = RaftNode(node_id=node_id, address=address, peers=peers)
