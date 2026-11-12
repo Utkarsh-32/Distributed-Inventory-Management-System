@@ -41,7 +41,7 @@ def find_leader(addresses):
 
     if len(leaders) == 1:
         leader_id, leader_response = next(iter(leaders.items()))
-        if leader_response:
+        if leader_response.app_address:
             distinct = set()
             for _, response in responses:
                 if (response.HasField("leader_id") and response.term == leader_response.term and
@@ -62,4 +62,4 @@ def find_leader(addresses):
     return None
 
 if __name__ == "__main__":
-    find_leader(["localhost:50061", "localhost:50061", "localhost:50065"])
+    find_leader(["localhost:50061", "localhost:50062", "localhost:50063"])
