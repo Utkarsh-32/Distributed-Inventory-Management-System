@@ -4,9 +4,14 @@ import secrets
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+import os
 
-
-DB_PATH = Path(__file__).resolve().parent / "inventory.db"
+DB_PATH = Path(
+    os.getenv(
+        "INVENTORY_DB_PATH",
+        Path(__file__).resolve().parent / "inventory.db"
+    )
+).resolve()
 
 
 # ============================================================
@@ -14,6 +19,7 @@ DB_PATH = Path(__file__).resolve().parent / "inventory.db"
 # ============================================================
 
 def get_connection():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(
         DB_PATH,
         timeout=15,
@@ -131,11 +137,45 @@ def initialize_database():
             quantity INTEGER NOT NULL CHECK (quantity > 0),
             status TEXT NOT NULL,
             created_at TEXT NOT NULL,
+            request_id TEXT,
             FOREIGN KEY (user_id)
                 REFERENCES users(id),
             FOREIGN KEY (item_id)
                 REFERENCES products(item_id)
         );
+
+        -- =================================================
+        -- RAFT LOG STORAGE
+        -- =================================================
+
+        CREATE TABLE IF NOT EXISTS raft_log (
+            log_index INTEGER PRIMARY KEY,
+            term INTEGER NOT NULL CHECK (term >= 0),
+            command_type TEXT NOT NULL,
+            command_json TEXT NOT NULL,
+            request_id TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_raft_log_request_id
+        ON raft_log(request_id)
+        WHERE request_id IS NOT NULL;
+
+
+        -- =================================================
+        -- RAFT PERSISTENT METADATA
+        -- =================================================
+
+        CREATE TABLE IF NOT EXISTS raft_metadata (
+            singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+            current_term INTEGER NOT NULL DEFAULT 0,
+            voted_for TEXT,
+            commit_index INTEGER NOT NULL DEFAULT 0,
+            last_applied INTEGER NOT NULL DEFAULT 0
+        );
+
+        INSERT OR IGNORE INTO raft_metadata (singleton_id)
+        VALUES (1);
 
         CREATE INDEX IF NOT EXISTS idx_sessions_user_id
             ON sessions(user_id);
@@ -152,6 +192,7 @@ def initialize_database():
     )
 
     _ensure_sales_history_tracking_column(conn)
+    _ensure_order_request_id_column(conn)
     _record_legacy_orders_in_sales_history(conn)
 
     conn.commit()
@@ -174,6 +215,27 @@ def _ensure_sales_history_tracking_column(conn):
         """
     )
 
+def _ensure_order_request_id_column(conn):
+    """Add request IDs to existing order tables."""
+
+    columns = conn.execute(
+        "PRAGMA table_info(orders)"
+    ).fetchall()
+
+    if not any(column["name"] == "request_id" for column in columns):
+        conn.execute(
+            """
+            ALTER TABLE orders
+            ADD COLUMN request_id TEXT
+            """
+        )
+
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_request_id
+        ON orders(request_id)
+        """
+    )
 
 def _record_sale_in_latest_history(conn, item_id, quantity):
     """Add a sale to the latest daily observation for one product."""
@@ -394,7 +456,7 @@ def get_all_products():
         conn.close()
 
 
-def place_order(user_id: int, item_id: str, quantity: int):
+def place_order(user_id: int, item_id: str, quantity: int, request_id=None):
     """
     Atomically place an order.
 
@@ -418,6 +480,65 @@ def place_order(user_id: int, item_id: str, quantity: int):
         # only one writer can perform the stock-changing
         # transaction at a time.
         conn.execute("BEGIN IMMEDIATE")
+
+        # Check whether this request was already processed.
+        if request_id is not None:
+            request_id = str(request_id).strip()
+
+            if not request_id:
+                conn.rollback()
+                return {
+                    "success": False,
+                    "status": "INVALID_REQUEST_ID",
+                    "message": "Request ID cannot be empty.",
+                }
+
+            existing_order = conn.execute(
+                """
+                SELECT id, user_id, item_id, quantity
+                FROM orders
+                WHERE request_id = ?
+                """,
+                (request_id,),
+            ).fetchone()
+
+            if existing_order is not None:
+
+                # A request ID must always represent the same order.
+                if (
+                    existing_order["user_id"] != user_id
+                    or existing_order["item_id"] != item_id
+                    or existing_order["quantity"] != quantity
+                ):
+                    conn.rollback()
+                    return {
+                        "success": False,
+                        "status": "REQUEST_ID_CONFLICT",
+                        "message": "Request ID was already used for another order.",
+                    }
+
+                product = conn.execute(
+                    """
+                    SELECT stock
+                    FROM products
+                    WHERE item_id = ?
+                    """,
+                    (item_id,),
+                ).fetchone()
+
+                conn.commit()
+
+                return {
+                    "success": True,
+                    "status": "SUCCESS",
+                    "message": (
+                        f"Order #{existing_order['id']} "
+                        "was already processed."
+                    ),
+                    "order_id": existing_order["id"],
+                    "remaining_stock": product["stock"],
+                    "duplicate": True,
+                }
 
         product = conn.execute(
             """
@@ -483,10 +604,11 @@ def place_order(user_id: int, item_id: str, quantity: int):
                     quantity,
                     status,
                     created_at,
-                    sales_history_recorded
+                    sales_history_recorded,
+                    request_id
                 )
             VALUES
-                (?, ?, ?, ?, ?, 1)
+                (?, ?, ?, ?, ?, 1, ?)
             """,
             (
                 user_id,
@@ -494,6 +616,7 @@ def place_order(user_id: int, item_id: str, quantity: int):
                 quantity,
                 "SUCCESS",
                 utc_now(),
+                request_id,
             ),
         )
 
