@@ -29,7 +29,7 @@ def find_leader(addresses):
 
     highest_term = max(response.term for _, response in responses)
 
-    leaders = []
+    leaders = dict()
     for address, response in responses:
         if (
             response.term == highest_term
@@ -37,21 +37,22 @@ def find_leader(addresses):
             and response.HasField("leader_id")
             and response.node_id == response.leader_id
         ):
-            leaders.append(response)
+            leaders[response.node_id] = response
 
     if len(leaders) == 1:
-        app_address = leaders[0].app_address
-        if app_address:
-            distinct = []
+        leader_id, leader_response = next(iter(leaders.items()))
+        if leader_response:
+            distinct = set()
             for _, response in responses:
-                if (response.term == leaders[0].term and
-                    response.leader_id == leaders[0].leader_id
+                if (response.HasField("leader_id") and response.term == leader_response.term and
+                    response.leader_id == leader_id
                 ):
-                    distinct.append(response.node_id)
+                    distinct.add(response.node_id)
             if len(distinct) >= 2:
-                print("Leader inventory address:", app_address)
-                return app_address
-        print("Leader has no inventory address")
+                print("Leader inventory address:", leader_response.app_address)
+                return leader_response.app_address
+            elif len(distinct) < 2:
+                print("Waiting for majority to confirm the leader.")
         return None
     elif not leaders:
         print("No leader elected yet")
@@ -61,4 +62,4 @@ def find_leader(addresses):
     return None
 
 if __name__ == "__main__":
-    find_leader(["localhost:50061", "localhost:50062", "localhost:50063"])
+    find_leader(["localhost:50061", "localhost:50061", "localhost:50065"])
