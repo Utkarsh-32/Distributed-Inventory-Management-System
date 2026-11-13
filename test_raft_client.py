@@ -12,4 +12,3 @@ if response2.HasField("leader_id"):
     print("leader_id:", response2.leader_id)
 else:
     print("Unknown")
-

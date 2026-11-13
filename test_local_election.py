@@ -43,4 +43,3 @@ if (votes >= 2):
 
     print(node2.role, node2.current_term)
     print(node1.role, node1.current_term)
-
