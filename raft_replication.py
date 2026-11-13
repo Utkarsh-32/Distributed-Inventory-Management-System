@@ -31,6 +31,65 @@ class RaftLogStore:
         finally:
             conn.close()
 
+    def save_election_state(self, current_term, voted_for):
+
+        if type(current_term) is not int or current_term < 0:
+            raise ValueError("Invalid Raft term.")
+
+        if voted_for is not None and type(voted_for) is not int:
+            raise ValueError("Invalid voted_for value.")
+
+        conn = database.get_connection()
+
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+
+            state = conn.execute(
+                """
+                SELECT current_term, voted_for
+                FROM raft_metadata
+                WHERE singleton_id = 1
+                """
+            ).fetchone()
+
+            stored_term = state["current_term"]
+            stored_vote = state["voted_for"]
+
+            if current_term < stored_term:
+                raise ValueError(
+                    "Cannot overwrite a newer Raft term."
+                )
+
+            if current_term == stored_term:
+                if (
+                    stored_vote is not None
+                    and voted_for != stored_vote
+                ):
+                    raise ValueError(
+                        "Cannot change an existing vote in the same term."
+                    )
+
+            conn.execute(
+                """
+                UPDATE raft_metadata
+                SET current_term = ?,
+                    voted_for = ?
+                WHERE singleton_id = 1
+                """,
+                (current_term, voted_for)
+            )
+
+            conn.commit()
+
+        except Exception:
+            conn.rollback()
+            raise
+
+        finally:
+            conn.close()
+
+
+
     def get_last_log_info(self):
         conn = database.get_connection()
 
@@ -57,6 +116,10 @@ class RaftLogStore:
 
         finally:
             conn.close()
+
+    def reset_replication_progress(self):
+        self.next_index.clear()
+        self.match_index.clear()
 
     def get_log_term(self, index):
 
@@ -817,6 +880,15 @@ class RaftLogStore:
                 item_id = command.get("item_id")
                 quantity = command.get("quantity")
                 request_id = entry["request_id"]
+                idempotency_key = command.get("idempotency_key")
+
+                if idempotency_key is None:
+                    idempotency_key = request_id
+
+                if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+                    raise ValueError("Invalid idempotency key.")
+
+                idempotency_key = idempotency_key.strip()
 
                 if type(user_id) is not int or user_id <= 0:
                     raise ValueError("Invalid user ID.")

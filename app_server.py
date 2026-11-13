@@ -10,13 +10,18 @@ import grpc
 import database
 import inventory_pb2
 import inventory_pb2_grpc
+import raft_pb2
+import raft_pb2_grpc
 
 
 APP_SERVER_ADDRESS = os.getenv(
     "APP_SERVER_ADDRESS",
     "localhost:50052"
 )
-
+RAFT_SERVER_ADDRESS = os.getenv(
+    "RAFT_SERVER_ADDRESS",
+    "localhost:50061"
+)
 LLM_SERVER_ADDRESS = "localhost:50051"
 # Qualitative insight requests are deliberately short, but generating a
 # structured forecast for the complete inventory can take much longer on a
@@ -42,6 +47,12 @@ class ClientServiceServicer(
         # Make sure the database schema exists.
         database.initialize_database()
         self.sessions = {}
+        self.raft_channel = grpc.insecure_channel(
+            RAFT_SERVER_ADDRESS
+        )
+        self.raft_stub = raft_pb2_grpc.RaftServiceStub(
+            self.raft_channel
+        )
         self.lock = threading.Lock()
         self.dashboard_lock = threading.Lock()
         self.dashboard_cache = None
@@ -378,22 +389,31 @@ class ClientServiceServicer(
 
         try:
 
-            result = database.place_order(
-                user_id=user_id,
-                item_id=item_id,
-                quantity=quantity,
-                idempotency_key=key,
+            raft_result = self.raft_stub.SubmitOrder(
+                raft_pb2.SubmitOrderRequest(
+                    user_id=user_id,
+                    item_id=item_id,
+                    quantity=quantity,
+                    idempotency_key=key
+                ),
+                timeout=25
             )
 
-        except Exception as exc:
+            result = {
+                "success": raft_result.success,
+                "status": raft_result.status,
+                "message": raft_result.message,
+            }
+
+        except grpc.RpcError as exc:
 
             print(
-                f"[ORDER] Database error: {exc}"
+                f"[RAFT ORDER] RPC failed: {exc}"
             )
 
             return inventory_pb2.StatusResponse(
-                status="INTERNAL_ERROR",
-                message="Unable to process order.",
+                status="RAFT_UNAVAILABLE",
+                message="Unable to contact the Raft service."
             )
 
         # --------------------------------------------------------
