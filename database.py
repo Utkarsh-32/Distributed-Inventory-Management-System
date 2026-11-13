@@ -137,12 +137,13 @@ def initialize_database():
             quantity INTEGER NOT NULL CHECK (quantity > 0),
             status TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            request_id TEXT,
+            idempotency_key TEXT,
             FOREIGN KEY (user_id)
                 REFERENCES users(id),
             FOREIGN KEY (item_id)
-                REFERENCES products(item_id)
-        );
+                REFERENCES products(item_id),
+            UNIQUE(user_id, idempotency_key)
+            );
 
         -- =================================================
         -- RAFT LOG STORAGE
@@ -192,8 +193,8 @@ def initialize_database():
     )
 
     _ensure_sales_history_tracking_column(conn)
-    _ensure_order_request_id_column(conn)
     _record_legacy_orders_in_sales_history(conn)
+    _ensure_idempotency_key_column(conn)
 
     conn.commit()
     conn.close()
@@ -456,7 +457,9 @@ def get_all_products():
         conn.close()
 
 
-def place_order(user_id: int, item_id: str, quantity: int, request_id=None):
+
+def place_order(user_id: int, item_id: str, quantity: int, idempotency_key: str):
+
     """
     Atomically place an order.
 
@@ -481,64 +484,54 @@ def place_order(user_id: int, item_id: str, quantity: int, request_id=None):
         # transaction at a time.
         conn.execute("BEGIN IMMEDIATE")
 
-        # Check whether this request was already processed.
-        if request_id is not None:
-            request_id = str(request_id).strip()
+        if (
+            not isinstance(idempotency_key, str)
+            or not idempotency_key.strip()
+        ):
+            conn.rollback()
+            return {
+                "success": False,
+                "status": "INVALID_IDEMPOTENCY_KEY",
+                "message": "A valid idempotency key is required.",
+            }
 
-            if not request_id:
+        idempotency_key = idempotency_key.strip()
+
+        existing_order = conn.execute(
+            """
+            SELECT id, item_id, quantity, status
+            FROM orders
+            WHERE user_id = ?
+            AND idempotency_key = ?
+            """,
+            (user_id, idempotency_key),
+        ).fetchone()
+
+        if existing_order is not None:
+
+            if (
+                existing_order["item_id"] != item_id
+                or existing_order["quantity"] != quantity
+            ):
                 conn.rollback()
                 return {
                     "success": False,
-                    "status": "INVALID_REQUEST_ID",
-                    "message": "Request ID cannot be empty.",
+                    "status": "IDEMPOTENCY_KEY_CONFLICT",
+                    "message": "This key was already used for a different order.",
                 }
 
-            existing_order = conn.execute(
-                """
-                SELECT id, user_id, item_id, quantity
-                FROM orders
-                WHERE request_id = ?
-                """,
-                (request_id,),
-            ).fetchone()
+            conn.rollback()
 
-            if existing_order is not None:
-
-                # A request ID must always represent the same order.
-                if (
-                    existing_order["user_id"] != user_id
-                    or existing_order["item_id"] != item_id
-                    or existing_order["quantity"] != quantity
-                ):
-                    conn.rollback()
-                    return {
-                        "success": False,
-                        "status": "REQUEST_ID_CONFLICT",
-                        "message": "Request ID was already used for another order.",
-                    }
-
-                product = conn.execute(
-                    """
-                    SELECT stock
-                    FROM products
-                    WHERE item_id = ?
-                    """,
-                    (item_id,),
-                ).fetchone()
-
-                conn.commit()
-
-                return {
-                    "success": True,
-                    "status": "SUCCESS",
-                    "message": (
-                        f"Order #{existing_order['id']} "
-                        "was already processed."
-                    ),
-                    "order_id": existing_order["id"],
-                    "remaining_stock": product["stock"],
-                    "duplicate": True,
-                }
+            return {
+                "success": existing_order["status"] == "SUCCESS",
+                "status": existing_order["status"],
+                "message": (
+                    f"Order #{existing_order['id']} "
+                    "was already processed."
+                ),
+                "order_id": existing_order["id"],
+                "duplicate": True,
+            }
 
         product = conn.execute(
             """
@@ -573,6 +566,7 @@ def place_order(user_id: int, item_id: str, quantity: int, request_id=None):
                 ),
             }
 
+
         # Decrease the stock.
         conn.execute(
             """
@@ -605,7 +599,7 @@ def place_order(user_id: int, item_id: str, quantity: int, request_id=None):
                     status,
                     created_at,
                     sales_history_recorded,
-                    request_id
+                    idempotency_key
                 )
             VALUES
                 (?, ?, ?, ?, ?, 1, ?)
@@ -616,7 +610,7 @@ def place_order(user_id: int, item_id: str, quantity: int, request_id=None):
                 quantity,
                 "SUCCESS",
                 utc_now(),
-                request_id,
+                idempotency_key,
             ),
         )
 
@@ -728,6 +722,32 @@ def get_products_with_history():
         )
 
     return products
+
+def _ensure_idempotency_key_column(conn):
+    columns = conn.execute(
+        "PRAGMA table_info(orders)"
+    ).fetchall()
+
+    if not any(
+        column["name"] == "idempotency_key"
+        for column in columns
+    ):
+        conn.execute(
+            """
+            ALTER TABLE orders
+            ADD COLUMN idempotency_key TEXT
+            """
+        )
+
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS
+            idx_orders_user_id_idempotency_key
+        ON orders(user_id, idempotency_key)
+        WHERE idempotency_key IS NOT NULL
+        AND idempotency_key <> ''
+        """
+    )
 
 
 # ============================================================

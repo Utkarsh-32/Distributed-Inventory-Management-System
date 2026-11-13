@@ -2,8 +2,9 @@ import json
 from urllib.parse import quote_plus
 
 import grpc
+import uuid
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
@@ -11,12 +12,16 @@ from fastapi.staticfiles import StaticFiles
 import inventory_pb2
 import inventory_pb2_grpc
 
+from leader_discovery import find_leader
+
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
 APP_SERVER_ADDRESS = "localhost:50052"
+
+RAFT_ADDRESSES = ["localhost:50061","localhost:50062","localhost:50063"]
 
 
 # ============================================================
@@ -48,9 +53,11 @@ def get_stub():
     """
     Create a gRPC client stub for the Application Server.
     """
-
+    leader_address = find_leader(RAFT_ADDRESSES)
+    if leader_address is None:
+        raise HTTPException(status_code=503, detail="Leader election in progress. Please try again.")
     channel = grpc.insecure_channel(
-        APP_SERVER_ADDRESS
+        leader_address
     )
 
     return inventory_pb2_grpc.ClientServiceStub(
@@ -541,6 +548,7 @@ def place_order(
     request: Request,
     item_id: str = Form(...),
     quantity: int = Form(...),
+    idempotency_key: str = Form(...),
 ):
 
     token = get_session_token(request)
@@ -554,6 +562,14 @@ def place_order(
 
     stub = get_stub()
 
+    idempotency_key = idempotency_key.strip()
+
+    if not idempotency_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Idempotency key is required.",
+        )
+
     # Build JSON safely.
     response = stub.post(
         inventory_pb2.PostRequest(
@@ -565,6 +581,7 @@ def place_order(
                     "quantity": quantity,
                 }
             ),
+            idempotency_key=idempotency_key,
         ),
         timeout=10,
     )

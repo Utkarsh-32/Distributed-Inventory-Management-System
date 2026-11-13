@@ -14,7 +14,7 @@ demand forecasts, reorder recommendations, and AI-assisted analytics.
 
 | Team member | Student ID | Primary contribution | Key work and learning |
 | --- | --- | --- | --- |
-| B Aditya Pai | 2026H____0077P | Frontend, backend, and LLM integration *(proposed)* | Contributed across the browser-facing user experience, service-side functionality, and local-AI workflow. This includes presenting inventory and analytics clearly, supporting API and business-flow integration, and helping ensure that LLM-generated results are rendered and handled safely. |
+| B Aditya Pai | 2026H1030077P | Frontend, backend, and LLM integration *(proposed)* | Contributed across the browser-facing user experience, service-side functionality, and local-AI workflow. This includes presenting inventory and analytics clearly, supporting API and business-flow integration, and helping ensure that LLM-generated results are rendered and handled safely. |
 | Utkarsh Shendre | 2026H1120136P | gRPC, backend, database, and final integration | Implemented and integrated the service boundaries, authentication and order workflows, SQLite persistence, inventory rules, forecast calculations, cache invalidation, validation, testing, and defect fixes. Key learning: service contracts and transactional data updates must keep inventory, sales history, analytics, and forecasts consistent. |
 | Bhojani Karan Yogeshbhai | 2026H1120146P | Frontend, backend, and LLM integration *(proposed)* | Contributed across the user interface, backend service flow, and Ollama-backed LLM workflow. This includes supporting clear dashboard behaviour, reliable service communication, structured forecast and analytics responses, prompt design, validation, and error handling. |
 

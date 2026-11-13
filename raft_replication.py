@@ -834,9 +834,10 @@ class RaftLogStore:
                     """
                     SELECT id, user_id, item_id, quantity, status
                     FROM orders
-                    WHERE request_id = ?
+                    WHERE user_id = ?
+                    AND idempotency_key = ?
                     """,
-                    (request_id,)
+                    (user_id, request_id)
                 ).fetchone()
 
                 if existing is not None:
@@ -903,7 +904,7 @@ class RaftLogStore:
                             status,
                             created_at,
                             sales_history_recorded,
-                            request_id
+                            idempotency_key
                         )
                         VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,

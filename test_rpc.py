@@ -1,5 +1,5 @@
 import json
-
+import uuid
 import grpc
 
 import inventory_pb2
@@ -89,6 +89,7 @@ def main():
             token=token,
             type="order",
             data=order_payload,
+            idempotency_key=str(uuid.uuid4()),
         )
     )
 
@@ -144,6 +145,7 @@ def main():
             token=token,
             type="order",
             data=bad_order_payload,
+            idempotency_key = str(uuid.uuid4()),
         )
     )
 
@@ -176,6 +178,7 @@ def main():
             token=token,
             type="order",
             data=invalid_payload,
+            idempotency_key=str(uuid.uuid4()),
         )
     )
 

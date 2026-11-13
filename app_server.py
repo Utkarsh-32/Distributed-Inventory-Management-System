@@ -12,7 +12,10 @@ import inventory_pb2
 import inventory_pb2_grpc
 
 
-APP_SERVER_ADDRESS = "localhost:50052"
+APP_SERVER_ADDRESS = os.getenv(
+    "APP_SERVER_ADDRESS",
+    "localhost:50052"
+)
 
 LLM_SERVER_ADDRESS = "localhost:50051"
 # Qualitative insight requests are deliberately short, but generating a
@@ -324,6 +327,18 @@ class ClientServiceServicer(
             )
 
         # --------------------------------------------------------
+        #  Idempotency Key
+        # --------------------------------------------------------
+
+        key = request.idempotency_key.strip()
+
+        if not key:
+            return inventory_pb2.StatusResponse(
+                status="INVALID_REQUEST",
+                message="Idempotency key required.",
+            )
+
+        # --------------------------------------------------------
         # 2. Determine operation
         # --------------------------------------------------------
 
@@ -367,6 +382,7 @@ class ClientServiceServicer(
                 user_id=user_id,
                 item_id=item_id,
                 quantity=quantity,
+                idempotency_key=key,
             )
 
         except Exception as exc:
