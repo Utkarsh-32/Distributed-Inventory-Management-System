@@ -24,6 +24,62 @@ PRODUCTS = [
 ]
 
 
+@dataclass(frozen=True)
+class WarehouseSeed:
+    warehouse_id: str
+    name: str
+    location: str
+    # Share of each product's initial stock held here, in percent.
+    stock_share_percent: int
+
+
+WAREHOUSES = [
+    WarehouseSeed("wh_blr", "Bengaluru Central", "Bengaluru, KA", 50),
+    WarehouseSeed("wh_mum", "Mumbai West", "Mumbai, MH", 30),
+    WarehouseSeed("wh_del", "Delhi North", "Delhi, DL", 20),
+]
+
+
+@dataclass(frozen=True)
+class SupplierSeed:
+    supplier_id: str
+    name: str
+    contact_email: str
+    lead_time_days: int
+
+
+SUPPLIERS = [
+    SupplierSeed("sup_techsource", "TechSource Distributors", "orders@techsource.example", 3),
+    SupplierSeed("sup_peripheral", "Peripheral Hub", "supply@peripheralhub.example", 5),
+    SupplierSeed("sup_quickparts", "QuickParts Express", "dispatch@quickparts.example", 1),
+]
+
+
+def split_stock_across_warehouses(total_stock, warehouses=WAREHOUSES):
+    """
+    Split one product's stock across warehouses by their configured share.
+
+    Rounding leftovers go to the first warehouse, so the parts always add up
+    to exactly ``total_stock``.
+
+    Returns:
+        List of (warehouse_id, stock) tuples.
+    """
+    if not warehouses:
+        return []
+
+    parts = [
+        (warehouse.warehouse_id, total_stock * warehouse.stock_share_percent // 100)
+        for warehouse in warehouses
+    ]
+
+    leftover = total_stock - sum(stock for _, stock in parts)
+    first_id, first_stock = parts[0]
+    parts[0] = (first_id, first_stock + leftover)
+
+    return parts
+
+
 def make_series(base, trend=0, noise=(0,)):
     """
     Generate 30 deterministic daily sales values.

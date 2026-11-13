@@ -1,4 +1,6 @@
 import json
+import os
+from pathlib import Path
 from urllib.parse import quote_plus
 
 import grpc
@@ -19,9 +21,21 @@ from leader_discovery import find_leader
 # CONFIGURATION
 # ============================================================
 
-APP_SERVER_ADDRESS = "localhost:50052"
+BASE_DIR = Path(__file__).resolve().parent
 
-RAFT_ADDRESSES = ["localhost:50061","localhost:50062","localhost:50063"]
+# Comma-separated Raft node addresses used to find the current leader.
+# Docker sets this to the node containers' addresses.
+RAFT_ADDRESSES = [
+    address.strip()
+    for address in os.getenv(
+        "RAFT_ADDRESSES",
+        "localhost:50061,localhost:50062,localhost:50063",
+    ).split(",")
+    if address.strip()
+]
+
+WEB_HOST = os.getenv("WEB_HOST", "127.0.0.1")
+WEB_PORT = int(os.getenv("WEB_PORT", "8000"))
 
 
 # ============================================================
@@ -35,13 +49,13 @@ app = FastAPI(
 
 app.mount(
     "/static",
-    StaticFiles(directory="static"),
+    StaticFiles(directory=BASE_DIR / "static"),
     name="static",
 )
 
 
 templates = Jinja2Templates(
-    directory="templates"
+    directory=BASE_DIR / "templates"
 )
 
 
@@ -390,6 +404,11 @@ def dashboard(
 
                 "inventory": [],
                 "orders": [],
+                "warehouses": [],
+                "suppliers": [],
+                "restock_requests": [],
+                "deliveries": [],
+                "low_stock_threshold": 5,
 
                 "forecasts": [],
                 "reorder_recommendations": [],
@@ -502,6 +521,29 @@ def dashboard(
         ]
   
     # --------------------------------------------------------
+    # Warehouses, suppliers, restocks and deliveries
+    #
+    # These sections are optional: if one of them fails to load,
+    # the rest of the dashboard still renders.
+    # --------------------------------------------------------
+
+    warehouse_data = get_json_data(stub, token, "warehouse_stock") or {}
+    warehouses = warehouse_data.get("warehouses", [])
+    low_stock_threshold = warehouse_data.get("low_stock_threshold", 5)
+
+    stock_by_item = {
+        product["item_id"]: product.get("by_warehouse", {})
+        for product in warehouse_data.get("products", [])
+    }
+
+    for item in inventory:
+        item["by_warehouse"] = stock_by_item.get(item["item_id"], {})
+
+    suppliers = get_json_data(stub, token, "suppliers") or []
+    restock_requests = get_json_data(stub, token, "restock_requests") or []
+    deliveries = get_json_data(stub, token, "deliveries") or []
+
+    # --------------------------------------------------------
     # Username
     # --------------------------------------------------------
 
@@ -522,6 +564,11 @@ def dashboard(
             "username": username,
             "inventory": inventory,
             "orders": orders,
+            "warehouses": warehouses,
+            "suppliers": suppliers,
+            "restock_requests": restock_requests,
+            "deliveries": deliveries,
+            "low_stock_threshold": low_stock_threshold,
 
             "forecasts": [],
             "reorder_recommendations": [],
@@ -540,27 +587,60 @@ def dashboard(
 
 
 # ============================================================
-# PLACE ORDER
+# JSON READ HELPER
 # ============================================================
 
-@app.post("/order")
-def place_order(
-    request: Request,
-    item_id: str = Form(...),
-    quantity: int = Form(...),
-    idempotency_key: str = Form(...),
-):
+def get_json_data(stub, token, request_type):
+    """
+    Fetch one of the JSON-encoded GET operations (warehouse_stock,
+    suppliers, restock_requests, deliveries).
 
+    Returns the decoded data, or None if it could not be loaded.
+    """
+    try:
+        response = stub.get(
+            inventory_pb2.GetRequest(
+                token=token,
+                type=request_type,
+            ),
+            timeout=10,
+        )
+
+    except grpc.RpcError:
+        return None
+
+    if response.status != "SUCCESS" or not response.items:
+        return None
+
+    try:
+        return json.loads(response.items[0].data)
+
+    except json.JSONDecodeError:
+        return None
+
+
+# ============================================================
+# WRITE HELPER
+# ============================================================
+
+def post_and_redirect(
+    request: Request,
+    operation: str,
+    data: dict,
+    idempotency_key: str,
+    section: str = "",
+):
+    """
+    Send a write operation to the leader's Application Server and
+    redirect back to the dashboard with the result message.
+    """
     token = get_session_token(request)
 
     if not token:
-
         return RedirectResponse(
             "/login",
             status_code=303,
         )
-
-    stub = get_stub()
 
     idempotency_key = idempotency_key.strip()
 
@@ -570,41 +650,149 @@ def place_order(
             detail="Idempotency key is required.",
         )
 
-    # Build JSON safely.
-    response = stub.post(
-        inventory_pb2.PostRequest(
-            token=token,
-            type="order",
-            data=json.dumps(
-                {
-                    "item_id": item_id,
-                    "quantity": quantity,
-                }
+    stub = get_stub()
+
+    try:
+        response = stub.post(
+            inventory_pb2.PostRequest(
+                token=token,
+                type=operation,
+                data=json.dumps(data),
+                idempotency_key=idempotency_key,
             ),
-            idempotency_key=idempotency_key,
-        ),
-        timeout=10,
-    )
+            timeout=10,
+        )
 
-    if response.status == "SUCCESS":
-
-        message_type = "success"
+    except grpc.RpcError:
+        status = "ERROR"
+        message_text = "Application Server is unavailable. Please try again."
 
     else:
+        if response.status == "UNAUTHORIZED":
+            return RedirectResponse(
+                "/logout",
+                status_code=303,
+            )
 
-        message_type = "error"
+        status = response.status
+        message_text = response.message
 
-    message = quote_plus(
-        response.message
-    )
+    message_type = "success" if status == "SUCCESS" else "error"
+    anchor = f"#{section}" if section else ""
 
     return RedirectResponse(
         (
             f"/dashboard?"
-            f"message={message}"
+            f"message={quote_plus(message_text)}"
             f"&message_type={message_type}"
+            f"{anchor}"
         ),
         status_code=303,
+    )
+
+
+# ============================================================
+# PLACE ORDER
+# ============================================================
+
+@app.post("/order")
+def place_order(
+    request: Request,
+    item_id: str = Form(...),
+    quantity: int = Form(...),
+    idempotency_key: str = Form(...),
+    warehouse_id: str = Form(""),
+):
+    data = {
+        "item_id": item_id,
+        "quantity": quantity,
+    }
+
+    # Empty means "let the server pick the best warehouse".
+    if warehouse_id.strip():
+        data["warehouse_id"] = warehouse_id.strip()
+
+    return post_and_redirect(
+        request,
+        "order",
+        data,
+        idempotency_key,
+        section="inventory",
+    )
+
+
+# ============================================================
+# SUPPLIER RESTOCK REQUESTS
+# ============================================================
+
+@app.post("/restock")
+def create_restock_request(
+    request: Request,
+    item_id: str = Form(...),
+    warehouse_id: str = Form(...),
+    supplier_id: str = Form(...),
+    quantity: int = Form(...),
+    idempotency_key: str = Form(...),
+    note: str = Form(""),
+):
+    return post_and_redirect(
+        request,
+        "restock_request",
+        {
+            "item_id": item_id,
+            "warehouse_id": warehouse_id,
+            "supplier_id": supplier_id,
+            "quantity": quantity,
+            "note": note,
+        },
+        idempotency_key,
+        section="restocks",
+    )
+
+
+@app.post("/restock/{restock_id}/status")
+def update_restock_status(
+    request: Request,
+    restock_id: int,
+    status: str = Form(...),
+    idempotency_key: str = Form(...),
+    note: str = Form(""),
+):
+    return post_and_redirect(
+        request,
+        "restock_status",
+        {
+            "restock_id": restock_id,
+            "status": status,
+            "note": note,
+        },
+        idempotency_key,
+        section="restocks",
+    )
+
+
+# ============================================================
+# DELIVERY UPDATES
+# ============================================================
+
+@app.post("/deliveries/{order_id}/status")
+def update_delivery_status(
+    request: Request,
+    order_id: int,
+    status: str = Form(...),
+    idempotency_key: str = Form(...),
+    note: str = Form(""),
+):
+    return post_and_redirect(
+        request,
+        "delivery_status",
+        {
+            "order_id": order_id,
+            "status": status,
+            "note": note,
+        },
+        idempotency_key,
+        section="deliveries",
     )
 
 
@@ -738,11 +926,11 @@ if __name__ == "__main__":
     )
 
     print(
-        "Open http://localhost:8000"
+        f"Open http://localhost:{WEB_PORT}"
     )
 
     uvicorn.run(
         app,
-        host="127.0.0.1",
-        port=8000,
+        host=WEB_HOST,
+        port=WEB_PORT,
     )
