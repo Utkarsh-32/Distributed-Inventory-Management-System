@@ -21,7 +21,11 @@ from leader_discovery import find_leader
 
 APP_SERVER_ADDRESS = "localhost:50052"
 
-RAFT_ADDRESSES = ["localhost:50061","localhost:50062","localhost:50063"]
+RAFT_ADDRESSES = [
+    "127.0.0.1:50061",
+    "127.0.0.1:50062",
+    "127.0.0.1:50063"
+]
 
 
 # ============================================================

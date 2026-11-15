@@ -18,6 +18,7 @@ class RaftNode:
         self.current_term = 0
         self.leader_id = None
         self.lock = threading.RLock()
+        self.replication_lock = threading.Lock()
         data_dir = Path("data")
         data_dir.mkdir(parents=True, exist_ok=True)
         self.state_file = data_dir / f"node_{self.node_id}_state.json"
@@ -94,7 +95,16 @@ class RaftNode:
             if election_term is not None:
                 self.collect_votes(election_term)
             if time.monotonic() >= next_heartbeat:
-                self.broadcast_heartbeats()
+                try:
+                    self.replicate_logs()
+                except Exception as exc:
+                    print(
+                        "Node",
+                        self.node_id,
+                        "replication error:",
+                        exc,
+                        flush=True
+                    )
                 next_heartbeat = time.monotonic() + 0.5
             time.sleep(0.1)
 
@@ -126,7 +136,21 @@ class RaftNode:
                 if votes >= votes_needed:
                     self.leader_id = self.node_id
                     self.role = "leader"
-                    print(self.node_id, "won the election in term", self.current_term)
+
+                    # Reset old follower acknowledgements.
+                    if hasattr(self, "log_store"):
+                        self.log_store.reset_replication_progress()
+
+                        last_info = self.log_store.get_last_log_info()
+                        self.last_log_index = last_info["last_log_index"]
+                        self.last_log_term = last_info["last_log_term"]
+
+                    print(
+                        self.node_id,
+                        "won the election in term",
+                        self.current_term
+                    )
+
                     return
 
     def send_heartbeat(self, peer_address, leader_term):
@@ -138,6 +162,216 @@ class RaftNode:
                 return response
         except grpc.RpcError:
             return None
+
+    def send_append_entries(self, peer_address, request_data):
+
+        with self.lock:
+            if (
+                self.role != "leader"
+                or self.current_term != request_data["term"]
+            ):
+                return {
+                    "success": False,
+                    "term": self.current_term,
+                    "reason": "NOT_LEADER"
+                }
+
+        protobuf_entries = []
+
+        for entry in request_data["entries"]:
+
+            protobuf_entries.append(
+                raft_pb2.RaftLogEntry(
+                    index=entry["index"],
+                    term=entry["term"],
+                    command_type=entry["command_type"],
+                    command_json=json.dumps(
+                        entry["command"],
+                        sort_keys=True,
+                        separators=(",", ":")
+                    ),
+                    request_id=entry.get("request_id") or "",
+                    created_at=entry.get("created_at") or ""
+                )
+            )
+
+        request = raft_pb2.AppendEntriesRequest(
+            leader_id=self.node_id,
+            term=request_data["term"],
+            prev_log_index=request_data["prev_log_index"],
+            prev_log_term=request_data["prev_log_term"],
+            entries=protobuf_entries,
+            leader_commit=request_data["leader_commit"]
+        )
+
+        try:
+            with grpc.insecure_channel(peer_address) as channel:
+
+                stub = raft_pb2_grpc.RaftServiceStub(
+                    channel=channel
+                )
+
+                response = stub.AppendEntries(
+                    request,
+                    timeout=1.5
+                )
+
+                return {
+                    "success": response.success,
+                    "term": response.term,
+                    "match_index": response.match_index,
+                    "conflict_index": response.conflict_index,
+                    "reason": response.reason
+                }
+
+        except grpc.RpcError as error:
+            raise RuntimeError(
+                f"AppendEntries failed for {peer_address}: {error}"
+            ) from error
+
+    def replicate_logs(self):
+
+        if not hasattr(self, "log_store"):
+            raise RuntimeError("Raft log store is not initialized.")
+
+        if not self.replication_lock.acquire(blocking=False):
+            return {
+                "success": False,
+                "reason": "REPLICATION_ALREADY_RUNNING"
+            }
+
+        try:
+            with self.lock:
+
+                if self.role != "leader":
+                    return {
+                        "success": False,
+                        "reason": "NOT_LEADER"
+                    }
+
+                leader_term = self.current_term
+                peers = list(self.peers)
+
+            state = self.log_store.get_state()
+
+            if state["current_term"] > leader_term:
+
+                with self.lock:
+                    self.become_follower(state["current_term"])
+
+                return {
+                    "success": False,
+                    "reason": "HIGHER_TERM_DISCOVERED"
+                }
+
+            if state["current_term"] < leader_term:
+
+                self.log_store.save_election_state(
+                    leader_term,
+                    self.voted_for
+                )
+
+            follower_callbacks = {
+                peer: (
+                    lambda request, address=peer:
+                    self.send_append_entries(address, request)
+                )
+                for peer in peers
+            }
+
+            replication_result = (
+                self.log_store.replicate_to_followers(
+                    follower_callbacks
+                )
+            )
+
+            if not replication_result["leadership_valid"]:
+
+                higher_term = replication_result["higher_term"]
+
+                with self.lock:
+                    if higher_term > self.current_term:
+                        self.become_follower(higher_term)
+
+                return {
+                    "success": False,
+                    "reason": "HIGHER_TERM_DISCOVERED",
+                    "higher_term": higher_term,
+                    "replication": replication_result
+                }
+
+            with self.lock:
+                if (
+                    self.role != "leader"
+                    or self.current_term != leader_term
+                ):
+                    return {
+                        "success": False,
+                        "reason": "LEADERSHIP_CHANGED"
+                    }
+
+            commit_result = (
+                self.log_store.advance_commit_index(
+                    cluster_size=len(peers) + 1
+                )
+            )
+
+            applied_entries = []
+            application_error = None
+
+            try:
+                applied_entries = (
+                    self.log_store.apply_committed_entries()
+                )
+            except Exception as exc:
+                application_error = str(exc)
+
+            last_info = self.log_store.get_last_log_info()
+
+            with self.lock:
+                self.last_log_index = last_info["last_log_index"]
+                self.last_log_term = last_info["last_log_term"]
+
+                if (
+                    self.role != "leader"
+                    or self.current_term != leader_term
+                ):
+                    return {
+                        "success": False,
+                        "reason": "LEADERSHIP_CHANGED"
+                    }
+
+            commit_propagation = None
+
+            if commit_result["committed"]:
+
+                commit_propagation = (
+                    self.log_store.replicate_to_followers(
+                        follower_callbacks
+                    )
+                )
+
+                if not commit_propagation["leadership_valid"]:
+
+                    higher_term = commit_propagation["higher_term"]
+
+                    with self.lock:
+                        if higher_term > self.current_term:
+                            self.become_follower(higher_term)
+
+            return {
+                "success": True,
+                "term": leader_term,
+                "replication": replication_result,
+                "commit": commit_result,
+                "applied_entries": applied_entries,
+                "application_error": application_error,
+                "commit_propagation": commit_propagation
+            }
+
+        finally:
+            self.replication_lock.release()
+
 
     def broadcast_heartbeats(self):
         with self.lock:
@@ -154,7 +388,7 @@ class RaftNode:
                     if reply.term > self.current_term:
                         self.become_follower(reply.term)
                         return
-            
+
 
     def save_state(self):
         with self.lock:
@@ -171,13 +405,20 @@ class RaftNode:
                     os.fsync(f.fileno())
 
                 os.replace(temp_file, self.state_file)
+                if hasattr(self, "log_store"):
+                    self.log_store.save_election_state(
+                        self.current_term,
+                        self.voted_for
+                    )
 
-                dir_fd = os.open(self.state_file.parent, os.O_RDONLY)
+                if os.name != "nt":
+                    dir_fd = os.open(self.state_file.parent, os.O_RDONLY)
 
-                try:
-                    os.fsync(dir_fd)
-                finally:
-                    os.close(dir_fd)
+                    try:
+                        os.fsync(dir_fd)
+                    finally:
+                        os.close(dir_fd)
+
             except OSError as error:
                 print("node_id:", self.node_id, "error:", error, flush=True)
                 os._exit(1)
@@ -207,7 +448,3 @@ class RaftNode:
             return True
         if candidate_last_index < local_last_index:
             return False
-        
-
-
-

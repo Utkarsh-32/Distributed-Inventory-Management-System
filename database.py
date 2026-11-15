@@ -4,9 +4,14 @@ import secrets
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+import os
 
-
-DB_PATH = Path(__file__).resolve().parent / "inventory.db"
+DB_PATH = Path(
+    os.getenv(
+        "INVENTORY_DB_PATH",
+        Path(__file__).resolve().parent / "inventory.db"
+    )
+).resolve()
 
 
 # ============================================================
@@ -14,6 +19,7 @@ DB_PATH = Path(__file__).resolve().parent / "inventory.db"
 # ============================================================
 
 def get_connection():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(
         DB_PATH,
         timeout=15,
@@ -137,7 +143,40 @@ def initialize_database():
             FOREIGN KEY (item_id)
                 REFERENCES products(item_id),
             UNIQUE(user_id, idempotency_key)
+            );
+
+        -- =================================================
+        -- RAFT LOG STORAGE
+        -- =================================================
+
+        CREATE TABLE IF NOT EXISTS raft_log (
+            log_index INTEGER PRIMARY KEY,
+            term INTEGER NOT NULL CHECK (term >= 0),
+            command_type TEXT NOT NULL,
+            command_json TEXT NOT NULL,
+            request_id TEXT,
+            created_at TEXT NOT NULL
         );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_raft_log_request_id
+        ON raft_log(request_id)
+        WHERE request_id IS NOT NULL;
+
+
+        -- =================================================
+        -- RAFT PERSISTENT METADATA
+        -- =================================================
+
+        CREATE TABLE IF NOT EXISTS raft_metadata (
+            singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+            current_term INTEGER NOT NULL DEFAULT 0,
+            voted_for TEXT,
+            commit_index INTEGER NOT NULL DEFAULT 0,
+            last_applied INTEGER NOT NULL DEFAULT 0
+        );
+
+        INSERT OR IGNORE INTO raft_metadata (singleton_id)
+        VALUES (1);
 
         CREATE INDEX IF NOT EXISTS idx_sessions_user_id
             ON sessions(user_id);
@@ -177,6 +216,27 @@ def _ensure_sales_history_tracking_column(conn):
         """
     )
 
+def _ensure_order_request_id_column(conn):
+    """Add request IDs to existing order tables."""
+
+    columns = conn.execute(
+        "PRAGMA table_info(orders)"
+    ).fetchall()
+
+    if not any(column["name"] == "request_id" for column in columns):
+        conn.execute(
+            """
+            ALTER TABLE orders
+            ADD COLUMN request_id TEXT
+            """
+        )
+
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_request_id
+        ON orders(request_id)
+        """
+    )
 
 def _record_sale_in_latest_history(conn, item_id, quantity):
     """Add a sale to the latest daily observation for one product."""
@@ -397,7 +457,9 @@ def get_all_products():
         conn.close()
 
 
+
 def place_order(user_id: int, item_id: str, quantity: int, idempotency_key: str):
+
     """
     Atomically place an order.
 
@@ -422,25 +484,54 @@ def place_order(user_id: int, item_id: str, quantity: int, idempotency_key: str)
         # transaction at a time.
         conn.execute("BEGIN IMMEDIATE")
 
-        existing_order = conn.execute(
-                    """
-                    SELECT id, status
-                    FROM orders
-                    WHERE user_id = ?
-                    AND idempotency_key = ?
-                    """,
-                    (user_id, idempotency_key),
-                ).fetchone()
-        
-        if existing_order is not None:
+        if (
+            not isinstance(idempotency_key, str)
+            or not idempotency_key.strip()
+        ):
             conn.rollback()
-        
             return {
-                        "success": True,
-                        "status": existing_order["status"],
-                        "message": f"Order #{existing_order['id']} was already processed.",
-                        "order_id": existing_order["id"],
+                "success": False,
+                "status": "INVALID_IDEMPOTENCY_KEY",
+                "message": "A valid idempotency key is required.",
+            }
+
+        idempotency_key = idempotency_key.strip()
+
+        existing_order = conn.execute(
+            """
+            SELECT id, item_id, quantity, status
+            FROM orders
+            WHERE user_id = ?
+            AND idempotency_key = ?
+            """,
+            (user_id, idempotency_key),
+        ).fetchone()
+
+        if existing_order is not None:
+
+            if (
+                existing_order["item_id"] != item_id
+                or existing_order["quantity"] != quantity
+            ):
+                conn.rollback()
+                return {
+                    "success": False,
+                    "status": "IDEMPOTENCY_KEY_CONFLICT",
+                    "message": "This key was already used for a different order.",
                 }
+
+            conn.rollback()
+
+            return {
+                "success": existing_order["status"] == "SUCCESS",
+                "status": existing_order["status"],
+                "message": (
+                    f"Order #{existing_order['id']} "
+                    "was already processed."
+                ),
+                "order_id": existing_order["id"],
+                "duplicate": True,
+            }
 
         product = conn.execute(
             """
