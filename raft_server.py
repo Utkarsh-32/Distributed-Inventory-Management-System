@@ -338,7 +338,10 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
 
     def GetStatus(self, request, context):
         with self.node.lock:
+            state = self.log_store.get_state()
             response = raft_pb2.StatusResponse(
+                commit_index=state["commit_index"],
+                last_applied=state["last_applied"],
                 node_id=self.node.node_id,
                 role=self.node.role,
                 term=self.node.current_term,

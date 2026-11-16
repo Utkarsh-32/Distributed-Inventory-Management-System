@@ -14,7 +14,8 @@ from fastapi.staticfiles import StaticFiles
 import inventory_pb2
 import inventory_pb2_grpc
 
-from leader_discovery import find_leader
+from concurrent.futures import ThreadPoolExecutor
+from leader_discovery import find_leader, read_status
 
 
 # ============================================================
@@ -62,6 +63,33 @@ templates = Jinja2Templates(
 # ============================================================
 # gRPC CONNECTION
 # ============================================================
+
+def cluster_node_status(address):
+    try:
+        status = read_status(address)
+    except grpc.RpcError:
+        return {"address": address, "reachable": False}
+
+    return {
+        "address": address,
+        "reachable": True,
+        "node_id": status.node_id,
+        "role": status.role,
+        "term": status.term,
+        **{
+            field: getattr(status, field) if status.HasField(field) else None
+            for field in ("leader_id", "commit_index", "last_applied")
+        },
+    }
+
+
+@app.get("/api/cluster/status")
+def cluster_status():
+    addresses = list(dict.fromkeys(RAFT_ADDRESSES))
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        nodes = list(pool.map(cluster_node_status, addresses))
+    return JSONResponse({"nodes": nodes}, headers={"Cache-Control": "no-store"})
+
 
 def get_stub():
     """

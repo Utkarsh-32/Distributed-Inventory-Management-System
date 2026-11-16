@@ -1,24 +1,26 @@
 import grpc
 import raft_pb2, raft_pb2_grpc
 
+def read_status(address):
+    with grpc.insecure_channel(address) as channel:
+        return raft_pb2_grpc.RaftServiceStub(channel).GetStatus(
+            raft_pb2.StatusRequest(), timeout=1
+        )
+
+
 def find_leader(addresses):
     responses = []
     for address in addresses:
         try:
-            with grpc.insecure_channel(address) as channel:
-                stub = raft_pb2_grpc.RaftServiceStub(channel=channel)
-                response = stub.GetStatus(
-                    raft_pb2.StatusRequest(),
-                    timeout=1
-                )
-                print(
-                    f"{address}: "
-                    f"Node={response.node_id}, "
-                    f"Role={response.role}, "
-                    f"Term={response.term}"
-                )
+            response = read_status(address)
+            print(
+                f"{address}: "
+                f"Node={response.node_id}, "
+                f"Role={response.role}, "
+                f"Term={response.term}"
+            )
 
-                responses.append((address, response))
+            responses.append((address, response))
         except grpc.RpcError as e:
             print(f"{address}: unreachable ({e.code().name})")
             continue

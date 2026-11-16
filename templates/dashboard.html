@@ -73,6 +73,19 @@
     <!-- WAREHOUSES -->
     <!-- ============================================ -->
 
+    <section class="card" aria-labelledby="cluster-title">
+        <h2 id="cluster-title">Live cluster</h2>
+        <p id="cluster-summary" role="status">Checking nodes…</p>
+        <div style="overflow-x:auto">
+            <table>
+                <thead><tr><th>Node</th><th>Role</th><th>Term</th><th>Known leader</th><th>Committed index</th><th>Applied index</th></tr></thead>
+                <tbody id="cluster-nodes"></tbody>
+            </table>
+        </div>
+        <p class="section-help">Committed is the latest log entry agreed on. Applied is the latest entry processed by this node.</p>
+    </section>
+    <script defer src="/static/cluster.js"></script>
+
     {% if warehouses %}
 
     <div class="warehouse-grid">
