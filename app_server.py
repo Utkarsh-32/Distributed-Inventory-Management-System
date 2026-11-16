@@ -22,7 +22,11 @@ RAFT_SERVER_ADDRESS = os.getenv(
     "RAFT_SERVER_ADDRESS",
     "localhost:50061"
 )
-LLM_SERVER_ADDRESS = "localhost:50051"
+
+LLM_SERVER_ADDRESS = os.getenv(
+    "LLM_SERVER_ADDRESS",
+    "localhost:50051"
+)
 # Qualitative insight requests are deliberately short, but generating a
 # structured forecast for the complete inventory can take much longer on a
 # locally hosted model (and the first request may need to load the model).
@@ -193,6 +197,41 @@ class ClientServiceServicer(
                 items=items,
             )
 
+        # ----------------------------------------------------
+        # WAREHOUSES, SUPPLIERS, RESTOCKS AND DELIVERIES
+        # ----------------------------------------------------
+
+        json_readers = {
+            "warehouse_stock": database.get_warehouse_stock,
+            "suppliers": database.get_suppliers,
+            "restock_requests": database.get_restock_requests,
+            "deliveries": database.get_deliveries,
+        }
+
+        if request.type in json_readers:
+            try:
+                data = json_readers[request.type]()
+
+            except Exception as exc:
+                print(
+                    f"[Application Server] {request.type} read failed: {exc}"
+                )
+
+                return inventory_pb2.GetResponse(
+                    status="INTERNAL_ERROR",
+                    items=[],
+                )
+
+            return inventory_pb2.GetResponse(
+                status="SUCCESS",
+                items=[
+                    inventory_pb2.DataItem(
+                        id=request.type,
+                        data=json.dumps(data),
+                    )
+                ],
+            )
+
         if request.type == "llm_demand_prediction":
             try:
                 forecasts = self._get_llm_demand_forecast()
@@ -317,6 +356,11 @@ class ClientServiceServicer(
                     items=[],
                 )
 
+        return inventory_pb2.GetResponse(
+            status="UNKNOWN_OPERATION",
+            items=[],
+        )
+
     # --------------------------------------------------------
     # POST
     # --------------------------------------------------------
@@ -353,7 +397,16 @@ class ClientServiceServicer(
         # 2. Determine operation
         # --------------------------------------------------------
 
-        if request.type != "order":
+        handlers = {
+            "order": self._post_order,
+            "restock_request": self._post_restock_request,
+            "restock_status": self._post_restock_status,
+            "delivery_status": self._post_delivery_status,
+        }
+
+        handler = handlers.get(request.type)
+
+        if handler is None:
             return inventory_pb2.StatusResponse(
                 status="UNKNOWN_OPERATION",
                 message=(
@@ -366,74 +419,178 @@ class ClientServiceServicer(
         # --------------------------------------------------------
 
         try:
-            import json
+            data = json.loads(request.data)
 
-            order_data = json.loads(request.data)
+        except (json.JSONDecodeError, TypeError):
+            data = None
 
-            item_id = order_data["item_id"]
-            quantity = int(order_data["quantity"])
-
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-
+        if not isinstance(data, dict):
             return inventory_pb2.StatusResponse(
                 status="INVALID_DATA",
-                message=(
-                    "Order data must be JSON containing "
-                    "'item_id' and 'quantity'."
-                ),
+                message="Request data must be a JSON object.",
             )
 
         # --------------------------------------------------------
-        # 4. Execute transaction
+        # 4. Execute the operation
         # --------------------------------------------------------
 
         try:
-
-            raft_result = self.raft_stub.SubmitOrder(
-                raft_pb2.SubmitOrderRequest(
-                    user_id=user_id,
-                    item_id=item_id,
-                    quantity=quantity,
-                    idempotency_key=key
-                ),
-                timeout=25
-            )
-
-            result = {
-                "success": raft_result.success,
-                "status": raft_result.status,
-                "message": raft_result.message,
-            }
-
+            result = handler(user_id, data, key)
         except grpc.RpcError as exc:
-
-            print(
-                f"[RAFT ORDER] RPC failed: {exc}"
-            )
-
+            print(f"[{request.type}] Raft RPC failed: {exc}")
             return inventory_pb2.StatusResponse(
                 status="RAFT_UNAVAILABLE",
-                message="Unable to contact the Raft service."
+                message="Unable to contact the Raft service.",
+            )
+        except Exception as exc:
+            print(f"[{request.type}] Operation failed: {exc}")
+            return inventory_pb2.StatusResponse(
+                status="INTERNAL_ERROR",
+                message=f"Unable to process {request.type}.",
             )
 
         # --------------------------------------------------------
         # 5. Return result
         # --------------------------------------------------------
 
-        print(
-            f"[ORDER] user={user_id} "
-            f"item={item_id} "
-            f"quantity={quantity} "
-            f"status={result['status']}"
-        )
-
-        if result["success"]:
+        if result.get("stock_changed"):
             self._invalidate_dashboard_cache()
 
         return inventory_pb2.StatusResponse(
             status=result["status"],
             message=result["message"],
         )
+
+    # --------------------------------------------------------
+    # POST HANDLERS
+    #
+    # Each handler validates its payload and returns a dict with
+    # "status" and "message", plus "stock_changed" when stock levels
+    # moved and cached analytics must be refreshed.
+    # --------------------------------------------------------
+
+    @staticmethod
+    def _invalid(message):
+        return {"status": "INVALID_DATA", "message": message}
+
+    def _post_order(self, user_id, data, key):
+        try:
+            item_id = str(data["item_id"])
+            quantity = int(data["quantity"])
+
+        except (KeyError, TypeError, ValueError):
+            return self._invalid(
+                "Order data must be JSON containing "
+                "'item_id' and 'quantity'."
+            )
+
+        warehouse_id = data.get("warehouse_id") or None
+
+        raft_result = self.raft_stub.SubmitOrder(
+            raft_pb2.SubmitOrderRequest(
+                user_id=user_id,
+                item_id=item_id,
+                quantity=quantity,
+                idempotency_key=key
+            ),
+            timeout=25
+        )
+
+        result = {
+            "success": raft_result.success,
+            "status": raft_result.status,
+            "message": raft_result.message,
+        }
+
+        print(
+            f"[ORDER] user={user_id} "
+            f"item={item_id} "
+            f"quantity={quantity} "
+            f"warehouse={warehouse_id or 'auto'} "
+            f"status={result['status']}"
+        )
+
+        result["stock_changed"] = result["success"]
+        return result
+
+    def _post_restock_request(self, user_id, data, key):
+        try:
+            item_id = str(data["item_id"])
+            warehouse_id = str(data["warehouse_id"])
+            supplier_id = str(data["supplier_id"])
+            quantity = int(data["quantity"])
+
+        except (KeyError, TypeError, ValueError):
+            return self._invalid(
+                "Restock data must contain 'item_id', 'warehouse_id', "
+                "'supplier_id' and 'quantity'."
+            )
+
+        result = database.create_restock_request(
+            user_id=user_id,
+            item_id=item_id,
+            warehouse_id=warehouse_id,
+            supplier_id=supplier_id,
+            quantity=quantity,
+            idempotency_key=key,
+            note=str(data.get("note", "")),
+        )
+
+        print(
+            f"[RESTOCK] user={user_id} item={item_id} "
+            f"warehouse={warehouse_id} supplier={supplier_id} "
+            f"quantity={quantity} status={result['status']}"
+        )
+
+        return result
+
+    def _post_restock_status(self, user_id, data, key):
+        try:
+            restock_id = int(data["restock_id"])
+            new_status = str(data["status"])
+
+        except (KeyError, TypeError, ValueError):
+            return self._invalid(
+                "Restock update must contain 'restock_id' and 'status'."
+            )
+
+        result = database.update_restock_status(
+            restock_id=restock_id,
+            new_status=new_status,
+            user_id=user_id,
+            note=str(data.get("note", "")),
+        )
+
+        print(
+            f"[RESTOCK] user={user_id} request={restock_id} "
+            f"-> {new_status} status={result['status']}"
+        )
+
+        return result
+
+    def _post_delivery_status(self, user_id, data, key):
+        try:
+            order_id = int(data["order_id"])
+            new_status = str(data["status"])
+
+        except (KeyError, TypeError, ValueError):
+            return self._invalid(
+                "Delivery update must contain 'order_id' and 'status'."
+            )
+
+        result = database.update_delivery_status(
+            order_id=order_id,
+            new_status=new_status,
+            user_id=user_id,
+            note=str(data.get("note", "")),
+        )
+
+        print(
+            f"[DELIVERY] user={user_id} order={order_id} "
+            f"-> {new_status} status={result['status']}"
+        )
+
+        return result
 
     def _get_llm_demand_forecast(self):
         """
@@ -1323,7 +1480,8 @@ def serve():
     print(
         f"Listening on: {APP_SERVER_ADDRESS}"
     )
-    print("Database: inventory.db")
+    print(f"Database: {database.DB_PATH}")
+    print(f"LLM Server: {LLM_SERVER_ADDRESS}")
     print("========================================")
 
     try:

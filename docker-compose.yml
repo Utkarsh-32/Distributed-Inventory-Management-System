@@ -1,0 +1,122 @@
+# Distributed Inventory Management System
+#
+#   docker compose up -d --build       start everything
+#   open http://localhost:8000          dashboard (alice / password)
+#   docker compose down                 stop (keeps each node's data)
+#   docker compose down --volumes       stop and wipe all node data
+#
+# Services:
+#   node1, node2, node3   one Raft server + one application server each,
+#                         every node with its own persistent volume
+#   llm                   LLM gRPC server (talks to Ollama)
+#   web                   FastAPI dashboard; finds the Raft leader and sends
+#                         requests to the leader's application server
+#
+# Ollama: by default the llm service uses Ollama running on your computer
+# (http://host.docker.internal:11434).  To run Ollama in Docker instead:
+#
+#   OLLAMA_HOST=http://ollama:11434 docker compose --profile ollama up -d --build
+#   docker compose exec ollama ollama pull qwen3:8b
+#
+# Without Ollama the dashboard still works; AI insights show a fallback.
+
+name: distributed-inventory
+
+x-app: &app
+  build: .
+  image: distributed-inventory:latest
+  restart: unless-stopped
+
+x-node: &node
+  <<: *app
+  command: ["/app/docker/node-entrypoint.sh"]
+  depends_on:
+    - llm
+
+x-node-env: &node-env
+  DATA_DIR: /data
+  RAFT_PORT: "50061"
+  APP_SERVER_ADDRESS: 0.0.0.0:50052
+  LLM_SERVER_ADDRESS: llm:50051
+  USE_LLM_FORECASTS: ${USE_LLM_FORECASTS:-false}
+
+services:
+  llm:
+    <<: *app
+    command: ["python", "llm_server.py"]
+    environment:
+      LLM_LISTEN_ADDRESS: 0.0.0.0:50051
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
+    extra_hosts:
+      # Lets Linux hosts reach Ollama on the host like Docker Desktop does.
+      - "host.docker.internal:host-gateway"
+
+  node1:
+    <<: *node
+    hostname: node1
+    environment:
+      <<: *node-env
+      NODE_ID: "1"
+      RAFT_PEERS: node2:50061 node3:50061
+      APP_ADVERTISE_ADDRESS: node1:50052
+    volumes:
+      - node1-data:/data
+    ports:
+      # Raft port published so the repo's test_raft_*.py scripts and
+      # leader_discovery.py work from the host.
+      - "50061:50061"
+
+  node2:
+    <<: *node
+    hostname: node2
+    environment:
+      <<: *node-env
+      NODE_ID: "2"
+      RAFT_PEERS: node1:50061 node3:50061
+      APP_ADVERTISE_ADDRESS: node2:50052
+    volumes:
+      - node2-data:/data
+    ports:
+      - "50062:50061"
+
+  node3:
+    <<: *node
+    hostname: node3
+    environment:
+      <<: *node-env
+      NODE_ID: "3"
+      RAFT_PEERS: node1:50061 node2:50061
+      APP_ADVERTISE_ADDRESS: node3:50052
+    volumes:
+      - node3-data:/data
+    ports:
+      - "50063:50061"
+
+  web:
+    <<: *app
+    command: ["python", "web_client.py"]
+    environment:
+      RAFT_ADDRESSES: node1:50061,node2:50061,node3:50061
+      WEB_HOST: 0.0.0.0
+      WEB_PORT: "8000"
+    ports:
+      - "8000:8000"
+    depends_on:
+      - node1
+      - node2
+      - node3
+
+  # Optional: Ollama in a container.  Enable with --profile ollama.
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    restart: unless-stopped
+    volumes:
+      - ollama-models:/root/.ollama
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
+  ollama-models:

@@ -70,14 +70,67 @@
 
 
     <!-- ============================================ -->
+    <!-- WAREHOUSES -->
+    <!-- ============================================ -->
+
+    {% if warehouses %}
+
+    <div class="warehouse-grid">
+
+        {% for warehouse in warehouses %}
+
+        <div class="warehouse-card">
+
+            <div class="warehouse-name">
+                {{ warehouse.name }}
+            </div>
+
+            <div class="warehouse-location">
+                {{ warehouse.location }}
+            </div>
+
+            <div class="warehouse-stats">
+
+                <div>
+                    <span class="stat-value">{{ warehouse.total_units }}</span>
+                    <span class="stat-label">units in stock</span>
+                </div>
+
+                <div>
+                    <span class="stat-value {% if warehouse.low_stock_items %}status-low{% else %}status-good{% endif %}">
+                        {{ warehouse.low_stock_items }}
+                    </span>
+                    <span class="stat-label">low-stock products</span>
+                </div>
+
+            </div>
+
+        </div>
+
+        {% endfor %}
+
+    </div>
+
+    {% endif %}
+
+
+    <!-- ============================================ -->
     <!-- INVENTORY -->
     <!-- ============================================ -->
 
-    <div class="card">
+    <div class="card" id="inventory">
 
         <h2>
             Current Inventory
         </h2>
+
+        {% if warehouses %}
+        <p class="section-help">
+            Stock per warehouse. Red values are at or below
+            {{ low_stock_threshold }} units. Leave the warehouse on
+            <strong>Auto</strong> to ship from the warehouses with the most stock.
+        </p>
+        {% endif %}
 
         <table>
 
@@ -90,8 +143,14 @@
                     </th>
 
                     <th>
-                        Stock
+                        Total
                     </th>
+
+                    {% for warehouse in warehouses %}
+                    <th class="numeric">
+                        {{ warehouse.name }}
+                    </th>
+                    {% endfor %}
 
                     <th>
                         Order
@@ -127,6 +186,15 @@
 
                     </td>
 
+                    {% for warehouse in warehouses %}
+                    {% set wh_stock = item.by_warehouse.get(warehouse.warehouse_id, 0) %}
+                    <td class="numeric">
+                        <span class="{% if wh_stock <= low_stock_threshold %}low-stock{% endif %}">
+                            {{ wh_stock }}
+                        </span>
+                    </td>
+                    {% endfor %}
+
                     <td>
 
                         <form
@@ -146,6 +214,17 @@
                                 name="idempotency_key"
                                 class="idempotency_key"
                             >
+
+                            {% if warehouses %}
+                            <select name="warehouse_id" aria-label="Ship from warehouse">
+                                <option value="">Auto</option>
+                                {% for warehouse in warehouses %}
+                                <option value="{{ warehouse.warehouse_id }}">
+                                    {{ warehouse.name }} ({{ item.by_warehouse.get(warehouse.warehouse_id, 0) }})
+                                </option>
+                                {% endfor %}
+                            </select>
+                            {% endif %}
 
                             <input
                                 type="number"
@@ -204,6 +283,306 @@
 
             <p class="empty">
                 You have not placed any orders yet.
+            </p>
+
+        {% endif %}
+
+    </div>
+
+    <!-- ============================================ -->
+    <!-- SUPPLIER RESTOCK REQUESTS -->
+    <!-- ============================================ -->
+
+    {% if warehouses and suppliers %}
+
+    {% set restock_actions = {
+        "APPROVED": "Approve",
+        "REJECTED": "Reject",
+        "CANCELLED": "Cancel",
+        "SHIPPED": "Mark Shipped",
+        "RECEIVED": "Mark Received",
+    } %}
+
+    <div class="card" id="restocks">
+
+        <h2>
+            Supplier Restock Requests
+        </h2>
+
+        <p class="section-help">
+            Ask a supplier to deliver stock to a warehouse. Stock is added
+            to the warehouse only when the shipment is marked
+            <strong>Received</strong>.
+        </p>
+
+        <form method="post" action="/restock" class="restock-form">
+
+            <input
+                type="hidden"
+                name="idempotency_key"
+                class="idempotency_key"
+            >
+
+            <label>
+                Product
+                <select name="item_id" required>
+                    {% for item in inventory %}
+                    <option value="{{ item.item_id }}">
+                        {{ item.name }} (total {{ item.stock }})
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <label>
+                Deliver to
+                <select name="warehouse_id" required>
+                    {% for warehouse in warehouses %}
+                    <option value="{{ warehouse.warehouse_id }}">
+                        {{ warehouse.name }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <label>
+                Supplier
+                <select name="supplier_id" required>
+                    {% for supplier in suppliers %}
+                    <option value="{{ supplier.supplier_id }}">
+                        {{ supplier.name }} ({{ supplier.lead_time_days }}-day lead time)
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <label>
+                Quantity
+                <input type="number" name="quantity" min="1" required>
+            </label>
+
+            <label class="wide">
+                Note
+                <input type="text" name="note" maxlength="500" placeholder="Optional">
+            </label>
+
+            <button type="submit">
+                Request Restock
+            </button>
+
+        </form>
+
+        {% if restock_requests %}
+
+        <table class="workflow-table">
+
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Product</th>
+                    <th>Warehouse</th>
+                    <th>Supplier</th>
+                    <th class="numeric">Qty</th>
+                    <th>Status</th>
+                    <th>Expected by</th>
+                    <th>Update</th>
+                </tr>
+            </thead>
+
+            <tbody>
+
+            {% for restock in restock_requests %}
+
+                <tr>
+
+                    <td>{{ restock.id }}</td>
+
+                    <td>
+                        {{ restock.product_name }}
+                        {% if restock.note %}
+                        <div class="muted">{{ restock.note }}</div>
+                        {% endif %}
+                    </td>
+
+                    <td>{{ restock.warehouse_name }}</td>
+
+                    <td>{{ restock.supplier_name }}</td>
+
+                    <td class="numeric">{{ restock.quantity }}</td>
+
+                    <td>
+                        <span class="badge badge-{{ restock.status | lower }}">
+                            {{ restock.status | replace("_", " ") | title }}
+                        </span>
+                        {% if restock.requested_by %}
+                        <div class="muted">by {{ restock.requested_by }}</div>
+                        {% endif %}
+                    </td>
+
+                    <td>
+                        {% if restock.status == "RECEIVED" %}
+                        <span class="muted">Received {{ restock.received_at[:10] }}</span>
+                        {% elif restock.status in ["REJECTED", "CANCELLED"] %}
+                        <span class="muted">—</span>
+                        {% else %}
+                        {{ restock.expected_by }}
+                        {% endif %}
+                    </td>
+
+                    <td>
+                        <div class="action-buttons">
+                        {% for next_status in restock.next_statuses %}
+                            <form method="post" action="/restock/{{ restock.id }}/status">
+                                <input type="hidden" name="status" value="{{ next_status }}">
+                                <input type="hidden" name="idempotency_key" class="idempotency_key">
+                                <button
+                                    type="submit"
+                                    class="small {% if next_status in ['REJECTED', 'CANCELLED'] %}secondary{% endif %}"
+                                >
+                                    {{ restock_actions.get(next_status, next_status | title) }}
+                                </button>
+                            </form>
+                        {% else %}
+                            <span class="muted">Done</span>
+                        {% endfor %}
+                        </div>
+                    </td>
+
+                </tr>
+
+            {% endfor %}
+
+            </tbody>
+
+        </table>
+
+        {% else %}
+
+            <p class="empty">
+                No restock requests yet.
+            </p>
+
+        {% endif %}
+
+    </div>
+
+    {% endif %}
+
+
+    <!-- ============================================ -->
+    <!-- DELIVERY TRACKING -->
+    <!-- ============================================ -->
+
+    <div class="card" id="deliveries">
+
+        <h2>
+            Delivery Tracking
+        </h2>
+
+        <p class="section-help">
+            Recent orders from all customers. Orders can be cancelled until
+            they ship; cancelled units go back to the warehouses they came from.
+        </p>
+
+        {% if deliveries %}
+
+        <table class="workflow-table">
+
+            <thead>
+                <tr>
+                    <th>Order</th>
+                    <th>Product</th>
+                    <th class="numeric">Qty</th>
+                    <th>Customer</th>
+                    <th>Ships from</th>
+                    <th>Status</th>
+                    <th>Update</th>
+                </tr>
+            </thead>
+
+            <tbody>
+
+            {% for delivery in deliveries %}
+
+                <tr>
+
+                    <td>#{{ delivery.order_id }}</td>
+
+                    <td>{{ delivery.product_name }}</td>
+
+                    <td class="numeric">{{ delivery.quantity }}</td>
+
+                    <td>{{ delivery.username or "—" }}</td>
+
+                    <td>
+                        {% for allocation in delivery.allocations %}
+                        <div>{{ allocation.warehouse_name }} ({{ allocation.quantity }})</div>
+                        {% else %}
+                        <span class="muted">—</span>
+                        {% endfor %}
+                    </td>
+
+                    <td>
+                        <span class="badge badge-{{ delivery.delivery_status | lower }}">
+                            {{ delivery.delivery_status | replace("_", " ") | title }}
+                        </span>
+
+                        {% if delivery.events %}
+                        <details class="timeline">
+                            <summary>History</summary>
+                            <ol>
+                            {% for event in delivery.events %}
+                                <li>
+                                    <strong>{{ event.status | replace("_", " ") | title }}</strong>
+                                    <span class="muted">
+                                        {{ event.created_at[:16] | replace("T", " ") }} UTC
+                                        {% if event.updated_by %}· {{ event.updated_by }}{% endif %}
+                                    </span>
+                                    {% if event.note %}<div class="muted">{{ event.note }}</div>{% endif %}
+                                </li>
+                            {% endfor %}
+                            </ol>
+                        </details>
+                        {% endif %}
+                    </td>
+
+                    <td>
+                        <div class="action-buttons">
+                        {% for next_status in delivery.next_statuses %}
+                            <form
+                                method="post"
+                                action="/deliveries/{{ delivery.order_id }}/status"
+                                {% if next_status == "CANCELLED" %}
+                                onsubmit="return confirm('Cancel order #{{ delivery.order_id }} and return its stock?');"
+                                {% endif %}
+                            >
+                                <input type="hidden" name="status" value="{{ next_status }}">
+                                <input type="hidden" name="idempotency_key" class="idempotency_key">
+                                <button
+                                    type="submit"
+                                    class="small {% if next_status == 'CANCELLED' %}secondary{% endif %}"
+                                >
+                                    {% if next_status == "CANCELLED" %}Cancel{% else %}Mark {{ next_status | replace("_", " ") | title }}{% endif %}
+                                </button>
+                            </form>
+                        {% else %}
+                            <span class="muted">Done</span>
+                        {% endfor %}
+                        </div>
+                    </td>
+
+                </tr>
+
+            {% endfor %}
+
+            </tbody>
+
+        </table>
+
+        {% else %}
+
+            <p class="empty">
+                No orders to deliver yet.
             </p>
 
         {% endif %}

@@ -14,6 +14,14 @@ optional local AI insights.
 - Calculates reorder decisions and quantities from forecast demand and stock
 - Shows inventory observations, management actions, and optional local-AI
   insights in the dashboard
+- Tracks stock separately in each warehouse and lets orders ship from a
+  chosen warehouse or be split automatically across warehouses
+- Sends supplier restock requests through an approval and shipping workflow;
+  stock is added only when the shipment is received
+- Tracks delivery status for every order, with a full update history and
+  cancellation that returns stock to the original warehouses
+- Runs as a Docker cluster: three nodes (Raft + application server) with
+  separate persistent storage, plus the LLM server and web client
 
 ## Architecture
 
@@ -44,6 +52,156 @@ LLM Server :50051 ---- Ollama: qwen3:8b
 All communication between the project services uses gRPC. The application
 server owns the numeric calculations and inventory rules; the local model
 cannot change stock, reorder quantities, or calculated forecasts.
+
+## Multi-warehouse operations
+
+### Warehouse-wise stock
+
+The demo data has three warehouses: **Bengaluru Central**, **Mumbai West**
+and **Delhi North**. Each product's stock is split across them, and
+`products.stock` always equals the sum of its warehouse stock.
+
+When placing an order, pick a warehouse or leave it on **Auto**:
+
+- **Chosen warehouse**: the whole order ships from it, and it fails if
+  that warehouse does not have enough stock.
+- **Auto**: the order ships from the warehouses with the most stock first,
+  splitting across warehouses only when necessary.
+
+Every order records which warehouses fulfilled it. A warehouse holding five
+units of a product or fewer is shown as low stock.
+
+### Supplier restock requests
+
+Request more stock for one product at one warehouse from a supplier. Each
+supplier has a lead time used to show the expected arrival date.
+
+```text
+REQUESTED -> APPROVED -> SHIPPED -> RECEIVED
+    |            |
+    +-> REJECTED +-> CANCELLED
+    +-> CANCELLED
+```
+
+Stock is added to the warehouse, in the same transaction as the status
+change, only when a request becomes `RECEIVED`. Steps cannot be skipped, and
+repeating a status changes nothing, so retries never add stock twice.
+
+### Delivery updates
+
+Every order starts as `PLACED` and moves through:
+
+```text
+PLACED -> PACKED -> SHIPPED -> OUT_FOR_DELIVERY -> DELIVERED
+   |         |
+   +---------+-> CANCELLED
+```
+
+An order can be cancelled until it ships. Cancelling returns its units to
+the warehouses they came from and removes the sale from the forecast
+history. Each update is kept in a timeline shown under **History** on the
+dashboard.
+
+### gRPC operations
+
+These use the existing `ClientService.get` and `ClientService.post` calls,
+so `inventory.proto` is unchanged. Responses and payloads are JSON.
+
+| Call | Type | Payload / result |
+| --- | --- | --- |
+| `get` | `warehouse_stock` | Warehouses and per-product stock by warehouse |
+| `get` | `suppliers` | Suppliers and lead times |
+| `get` | `restock_requests` | Recent restock requests with allowed next statuses |
+| `get` | `deliveries` | Recent orders with allocations and delivery timeline |
+| `post` | `order` | `item_id`, `quantity`, optional `warehouse_id` |
+| `post` | `restock_request` | `item_id`, `warehouse_id`, `supplier_id`, `quantity`, optional `note` |
+| `post` | `restock_status` | `restock_id`, `status`, optional `note` |
+| `post` | `delivery_status` | `order_id`, `status`, optional `note` |
+
+Every `post` requires an idempotency key, as orders already did.
+
+## Run with Docker
+
+This is the easiest way to run the full cluster. It needs
+[Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker
+Engine with the Compose plugin).
+
+```text
+Browser -> web :8000 -> finds the Raft leader -> leader's app server
+                                                    |
+           node1 / node2 / node3                    v
+           (Raft :50061 + app server :50052,     llm :50051 -> Ollama
+            each with its own volume)
+```
+
+| Service | Runs | Storage |
+| --- | --- | --- |
+| `node1`, `node2`, `node3` | `raft_server.py` + `app_server.py` | Volumes `node1-data`, `node2-data`, `node3-data` (SQLite database and Raft state) |
+| `llm` | `llm_server.py` | - |
+| `web` | `web_client.py` on port 8000 | - |
+
+Each node seeds its own database the first time it starts and keeps it
+across restarts. Stopping a node container stops its Raft server and its
+application server together, which is how the demo simulates a node crash.
+
+Start, demo and stop:
+
+```bash
+# macOS / Linux / Git Bash
+./scripts/start.sh --fresh   # build, start, wait for a leader
+./scripts/demo.sh            # feature walkthrough + leader failover
+./scripts/stop.sh            # stop; add --wipe to delete node data
+```
+
+```powershell
+# Windows PowerShell
+.\scripts\start.ps1 -Fresh
+.\scripts\demo.ps1
+.\scripts\stop.ps1        # add -Wipe to delete node data
+```
+
+Then open [http://localhost:8000](http://localhost:8000) and sign in as
+`alice` / `password`.
+
+Useful commands:
+
+```bash
+docker compose exec web python scripts/demo.py status   # roles, terms, leader
+docker compose logs -f node1                            # one node's logs
+docker compose stop node2                               # simulate a crash
+docker compose start node2                              # bring it back
+```
+
+**Ollama:** the `llm` container uses Ollama on your computer at
+`http://host.docker.internal:11434` by default. To run Ollama in Docker
+instead:
+
+```bash
+OLLAMA_HOST=http://ollama:11434 docker compose --profile ollama up -d --build
+docker compose exec ollama ollama pull qwen3:8b
+```
+
+Without Ollama, everything except the local-AI insights works; the
+dashboard shows a fallback message for those.
+
+**Before replication is merged:** each node has its own database, seeded
+with the same demo data. Writes go to the current leader only, so after a
+failover the new leader shows its own copy of the data and users sign in
+again. Raft log replication keeps the nodes' databases in sync once it is
+merged.
+
+### Configuration
+
+| Variable | Used by | Default |
+| --- | --- | --- |
+| `INVENTORY_DB_PATH` | app server, `seed_db.py` | `./inventory.db` |
+| `APP_SERVER_ADDRESS` | app server listen address | `localhost:50052` |
+| `LLM_SERVER_ADDRESS` | app server, address of the LLM server | `localhost:50051` |
+| `LLM_LISTEN_ADDRESS` | LLM server listen address | `localhost:50051` |
+| `RAFT_ADDRESSES` | web client, `scripts/demo.py` (comma-separated) | `localhost:50061,localhost:50062,localhost:50063` |
+| `WEB_HOST`, `WEB_PORT` | web client | `127.0.0.1`, `8000` |
+
+`python seed_db.py --if-empty` seeds only a database that has no users yet.
 
 ## Requirements
 
@@ -197,6 +355,13 @@ Run the focused dashboard tests:
 python -m unittest tests/test_dashboard_optimization.py
 ```
 
+Run the warehouse, restock and delivery tests. They use a temporary database
+and need no running services:
+
+```bash
+python -m unittest tests/test_warehouse_features.py tests/test_warehouse_rpc.py
+```
+
 The following integration checks require the relevant services to be running:
 
 ```bash
@@ -219,9 +384,14 @@ python test_concurrency.py
 ├── seed_db.py                 # Demo-data reset and seeding
 ├── mock_data.py               # Demo products and sales histories
 ├── inventory.proto            # gRPC contract
+├── raft_node.py, raft_server.py, leader_discovery.py  # Raft leader election
 ├── templates/                 # Login and dashboard pages
 ├── static/                    # Browser styles
-└── tests/                     # Integration and dashboard tests
+├── Dockerfile                 # One image for every service
+├── docker-compose.yml         # 3 nodes + LLM + web, per-node volumes
+├── docker/node-entrypoint.sh  # Starts one node (Raft + app server)
+├── scripts/                   # start / stop / demo scripts (.sh and .ps1), demo.py
+└── tests/                     # Integration, dashboard and warehouse tests
 ```
 
 ## Troubleshooting
