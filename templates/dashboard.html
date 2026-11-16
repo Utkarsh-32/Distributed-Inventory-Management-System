@@ -60,7 +60,7 @@
 
     {% if message %}
 
-    <div class="alert {{ message_type }}">
+    <div id="dashboard-message" class="alert {{ message_type }}" role="alert">
 
         {{ message }}
 
@@ -219,7 +219,7 @@
                             <select name="warehouse_id" aria-label="Ship from warehouse">
                                 <option value="">Auto</option>
                                 {% for warehouse in warehouses %}
-                                <option value="{{ warehouse.warehouse_id }}">
+                                <option value="{{ warehouse.warehouse_id }}" data-stock="{{ item.by_warehouse.get(warehouse.warehouse_id, 0) }}">
                                     {{ warehouse.name }} ({{ item.by_warehouse.get(warehouse.warehouse_id, 0) }})
                                 </option>
                                 {% endfor %}
@@ -230,6 +230,8 @@
                                 type="number"
                                 name="quantity"
                                 min="1"
+                                max="{{ item.stock }}"
+                                data-total="{{ item.stock }}"
                                 placeholder="Qty"
                                 required
                             >
@@ -1388,6 +1390,23 @@ function escapeHtml(value) {
 
 <script>
 document.addEventListener("DOMContentLoaded", function () {
+    for (const form of document.querySelectorAll(".order-form")) {
+        const quantity = form.elements.quantity;
+        const warehouse = form.elements.warehouse_id;
+        function checkStock() {
+            const selectedStock = warehouse?.selectedOptions[0]?.dataset.stock;
+            const available = Math.min(Number(quantity.dataset.total),
+                                       Number(selectedStock ?? quantity.dataset.total));
+            quantity.max = String(available);
+            quantity.setCustomValidity(quantity.valueAsNumber > available
+                ? `Only ${available} units are available for this selection. Enter a smaller quantity.`
+                : "");
+        }
+        quantity.addEventListener("input", checkStock);
+        warehouse?.addEventListener("change", checkStock);
+        checkStock();
+    }
+
     const keyFields = document.querySelectorAll(
         ".idempotency_key"
     );

@@ -678,7 +678,14 @@ def post_and_redirect(
         message_text = response.message
 
     message_type = "success" if status == "SUCCESS" else "error"
+    if operation == "order" and status == "FAILED_INSUFFICIENT_STOCK":
+        message_text = (
+            f"Order declined. There is not enough stock for the requested "
+            f"{data['quantity']} units. Choose a smaller quantity or another warehouse."
+        )
     anchor = f"#{section}" if section else ""
+    if operation == "order" and message_type == "error":
+        anchor = "#dashboard-message"
 
     return RedirectResponse(
         (

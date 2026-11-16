@@ -73,6 +73,7 @@ message SubmitOrderRequest {
     string item_id = 2;
     int32 quantity = 3;
     string idempotency_key = 4;
+    string warehouse_id = 5;
 }
 
 message SubmitOrderResponse {

@@ -943,7 +943,19 @@ class RaftLogStore:
 
                     current_stock = product["stock"]
 
+                    allocation = {"success": False, "status": "FAILED_INSUFFICIENT_STOCK"}
                     if current_stock >= quantity:
+                        allocation = database._allocate_order_stock(
+                            conn, item_id, quantity, command.get("warehouse_id")
+                        )
+
+                    if allocation["success"]:
+                        for warehouse_id, units, _ in allocation["parts"]:
+                            conn.execute(
+                                "UPDATE warehouse_stock SET stock = stock - ? "
+                                "WHERE warehouse_id = ? AND item_id = ?",
+                                (units, warehouse_id, item_id)
+                            )
 
                         conn.execute(
                             """
@@ -964,10 +976,10 @@ class RaftLogStore:
                         sales_recorded = 1
 
                     else:
-                        result_status = "FAILED_INSUFFICIENT_STOCK"
+                        result_status = allocation["status"]
                         sales_recorded = 0
 
-                    conn.execute(
+                    order_cursor = conn.execute(
                         """
                         INSERT INTO orders (
                             user_id,
@@ -990,6 +1002,13 @@ class RaftLogStore:
                             request_id
                         )
                     )
+
+                    if allocation["success"]:
+                        conn.executemany(
+                            "INSERT INTO order_allocations (order_id, warehouse_id, quantity) "
+                            "VALUES (?, ?, ?)",
+                            [(order_cursor.lastrowid, wh, units) for wh, units, _ in allocation["parts"]]
+                        )
 
                 conn.execute(
                     """

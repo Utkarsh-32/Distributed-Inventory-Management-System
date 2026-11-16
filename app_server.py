@@ -491,7 +491,8 @@ class ClientServiceServicer(
                 user_id=user_id,
                 item_id=item_id,
                 quantity=quantity,
-                idempotency_key=key
+                idempotency_key=key,
+                warehouse_id=warehouse_id or ""
             ),
             timeout=25
         )

@@ -247,6 +247,9 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
             "idempotency_key": idempotency_key
         }
 
+        if request.warehouse_id:
+            command["warehouse_id"] = request.warehouse_id
+
         try:
             entry = self.log_store.append_local_entry(
                 term=current_term,
