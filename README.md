@@ -20,13 +20,26 @@ A Python inventory application with a FastAPI dashboard, gRPC services, SQLite s
 
 ## Current integration scope
 
-| Operation | Current behavior |
-| --- | --- |
-| Product orders | The application submits orders through Raft. Applying an order checks total product stock, updates that total, and records the order. |
-| Warehouse selection and allocation | The dashboard accepts a warehouse selection. The current Raft order message omits the warehouse ID, and its apply routine updates aggregate stock only. Per-warehouse balances and allocation history can therefore disagree with aggregate stock after a replicated order. |
-| Supplier restocking | Local database workflows support requesting, approving, shipping, and receiving a restock. Receipt adds stock to the warehouse. These writes still need to be carried through the replicated log. |
-| Delivery tracking | The local workflow supports packing, shipping, delivery, and cancellation before shipping. Its changes and allocation-based cancellations still need integration with replicated orders. |
-| Login and reads | Sessions and inventory reads use the selected node’s local database. A user may need to sign in again after failover. Discovery helps route requests. Strongly consistent reads still require a server-side check that the leader has majority support and has applied the required entries. |
+Every inventory write is a Raft command. The application server sends it to
+its local Raft service with `SubmitCommand`; the leader appends it to the
+log, replicates it, and once a majority has it every node applies it with the
+same `database.apply_command` logic inside the log-application transaction.
+Business rejections (not enough stock in the chosen warehouse, an invalid
+delivery transition) are recorded as results, so all nodes reach the same
+decision.
+
+| Operation | Raft command | Behavior on every node |
+| --- | --- | --- |
+| Product orders | `PLACE_ORDER` | Checks total stock and the chosen warehouse (or allocates automatically), updates per-warehouse and total stock, records the order, its allocations and a `PLACED` delivery event |
+| Supplier restocking | `CREATE_RESTOCK`, `UPDATE_RESTOCK` | Creates the request; moves it through approval and shipping; adds stock to the warehouse on `RECEIVED` |
+| Delivery tracking | `UPDATE_DELIVERY` | Advances the delivery status; cancelling before shipping returns units to their original warehouses |
+| Login and reads | not replicated | Sessions and reads use the selected node's local database. A user may need to sign in again after failover. Strongly consistent reads would still need a leader-side majority check. |
+
+Each command carries the leader's timestamp and the submitting user's
+idempotency key, so a retry is applied at most once and the resulting rows
+match across nodes. `tests/test_raft_warehouse_integration.py` drives a
+simulated three-node cluster through all four commands and checks that every
+node ends with identical stock, allocations and histories.
 
 ## Start with Docker Compose
 
@@ -114,13 +127,16 @@ docker compose exec ollama ollama pull qwen3:8b
 
 ## Development checks
 
-Run the warehouse database tests against temporary databases:
+Run the warehouse and replication tests against temporary databases (no
+services need to be running):
 
 ```bash
-python -m unittest discover -s tests -p 'test_warehouse_features.py'
+python -m unittest tests/test_warehouse_features.py tests/test_warehouse_rpc.py tests/test_raft_warehouse_integration.py
 ```
 
-The warehouse suite exercises local operations. Use the separate-node failover procedure above to check replicated orders. For dashboard behavior, run `python -m unittest discover -s tests -p 'test_dashboard_optimization.py'`.
+The integration suite wires the real Raft servicer, log store and
+application server together in-process as a simulated three-node cluster.
+Use the separate-node failover procedure above to check the live cluster. For dashboard behavior, run `python -m unittest discover -s tests -p 'test_dashboard_optimization.py'`.
 
 After editing a protocol, regenerate its bindings in the active environment. The integration branch regenerated the Raft bindings with `grpcio-tools` 1.84.0 for a `grpcio` 1.84.0 runtime:
 

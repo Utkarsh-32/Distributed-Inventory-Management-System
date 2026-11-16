@@ -633,258 +633,47 @@ def place_order(
     quantity: int,
     idempotency_key: str,
     warehouse_id: str | None = None,
+    created_at: str | None = None,
 ):
     """
-    Atomically place an order.
+    Atomically place an order in its own transaction.
 
-    If ``warehouse_id`` is given the whole order is fulfilled from that
-    warehouse.  Otherwise it is fulfilled from the warehouses holding the
-    most stock first, splitting across warehouses only when necessary.
-
-    Returns a dictionary describing the result.
+    See ``apply_place_order`` for the rules.  This wrapper is used when a
+    node runs on its own; the Raft apply loop calls ``apply_place_order``
+    inside the log-application transaction instead.
     """
+    return run_in_transaction(
+        apply_place_order,
+        user_id=user_id,
+        item_id=item_id,
+        quantity=quantity,
+        idempotency_key=idempotency_key,
+        warehouse_id=warehouse_id,
+        created_at=created_at,
+    )
 
-    # Validate before touching the database.
-    if quantity <= 0:
-        return {
-            "success": False,
-            "status": "INVALID_QUANTITY",
-            "message": "Quantity must be greater than zero.",
-        }
 
-    warehouse_id = (warehouse_id or "").strip() or None
+def run_in_transaction(apply_function, **kwargs):
+    """
+    Run one of the ``apply_*`` write functions in a fresh write transaction.
 
+    BEGIN IMMEDIATE obtains the write lock up front, so only one writer can
+    perform a stock-changing transaction at a time.  The transaction is
+    committed when the function reports success and rolled back otherwise.
+    """
     conn = get_connection()
 
     try:
-        # BEGIN IMMEDIATE obtains a write transaction.
-        #
-        # This is important for concurrency:
-        # only one writer can perform the stock-changing
-        # transaction at a time.
         conn.execute("BEGIN IMMEDIATE")
 
-        if (
-            not isinstance(idempotency_key, str)
-            or not idempotency_key.strip()
-        ):
-            conn.rollback()
-            return {
-                "success": False,
-                "status": "INVALID_IDEMPOTENCY_KEY",
-                "message": "A valid idempotency key is required.",
-            }
+        result = apply_function(conn, **kwargs)
 
-        idempotency_key = idempotency_key.strip()
-
-        existing_order = conn.execute(
-            """
-            SELECT id, item_id, quantity, status
-            FROM orders
-            WHERE user_id = ?
-            AND idempotency_key = ?
-            """,
-            (user_id, idempotency_key),
-        ).fetchone()
-
-        if existing_order is not None:
-
-            if (
-                existing_order["item_id"] != item_id
-                or existing_order["quantity"] != quantity
-            ):
-                conn.rollback()
-                return {
-                    "success": False,
-                    "status": "IDEMPOTENCY_KEY_CONFLICT",
-                    "message": "This key was already used for a different order.",
-                }
-
+        if result.get("success"):
+            conn.commit()
+        else:
             conn.rollback()
 
-            return {
-                "success": existing_order["status"] == "SUCCESS",
-                "status": existing_order["status"],
-                "message": (
-                    f"Order #{existing_order['id']} "
-                    "was already processed."
-                ),
-                "order_id": existing_order["id"],
-                "duplicate": True,
-            }
-
-        product = conn.execute(
-            """
-            SELECT item_id, name, stock
-            FROM products
-            WHERE item_id = ?
-            """,
-            (item_id,),
-        ).fetchone()
-
-        if product is None:
-            conn.rollback()
-
-            return {
-                "success": False,
-                "status": "ITEM_NOT_FOUND",
-                "message": "The requested product does not exist.",
-            }
-
-        current_stock = product["stock"]
-
-        # Critical inventory check.
-        if current_stock < quantity:
-            conn.rollback()
-
-            return {
-                "success": False,
-                "status": "FAILED_INSUFFICIENT_STOCK",
-                "message": (
-                    f"Only {current_stock} units of "
-                    f"{product['name']} are available."
-                ),
-            }
-
-        # Decide which warehouse(s) the units come from.
-        allocation = _allocate_order_stock(
-            conn,
-            item_id,
-            quantity,
-            warehouse_id,
-        )
-
-        if not allocation["success"]:
-            conn.rollback()
-
-            return {
-                "success": False,
-                "status": allocation["status"],
-                "message": allocation["message"].format(
-                    product=product["name"]
-                ),
-            }
-
-        for allocated_warehouse_id, allocated_quantity, _ in allocation["parts"]:
-            conn.execute(
-                """
-                UPDATE warehouse_stock
-                SET stock = stock - ?
-                WHERE warehouse_id = ?
-                  AND item_id = ?
-                """,
-                (allocated_quantity, allocated_warehouse_id, item_id),
-            )
-
-        # Decrease the total stock.
-        conn.execute(
-            """
-            UPDATE products
-            SET stock = stock - ?
-            WHERE item_id = ?
-            """,
-            (quantity, item_id),
-        )
-
-        remaining_stock = current_stock - quantity
-
-        # A successful order is also a sale.  Include it in the most recent
-        # daily observation so the rolling seven-day average, trend, and
-        # forecast all reflect the same transaction as the stock level.
-        _record_sale_in_latest_history(
-            conn,
-            item_id,
-            quantity,
-        )
-
-        created_at = utc_now()
-
-        # Record the successful order.
-        cursor = conn.execute(
-            """
-            INSERT INTO orders
-                (
-                    user_id,
-                    item_id,
-                    quantity,
-                    status,
-                    created_at,
-                    sales_history_recorded,
-                    idempotency_key,
-                    delivery_status
-                )
-            VALUES
-                (?, ?, ?, ?, ?, 1, ?, 'PLACED')
-            """,
-            (
-                user_id,
-                item_id,
-                quantity,
-                "SUCCESS",
-                created_at,
-                idempotency_key,
-            ),
-        )
-
-        order_id = cursor.lastrowid
-
-        conn.executemany(
-            """
-            INSERT INTO order_allocations
-                (order_id, warehouse_id, quantity)
-            VALUES
-                (?, ?, ?)
-            """,
-            [
-                (order_id, allocated_warehouse_id, allocated_quantity)
-                for allocated_warehouse_id, allocated_quantity, _
-                in allocation["parts"]
-            ],
-        )
-
-        conn.execute(
-            """
-            INSERT INTO delivery_events
-                (order_id, status, note, updated_by, created_at)
-            VALUES
-                (?, 'PLACED', 'Order placed', ?, ?)
-            """,
-            (order_id, user_id, created_at),
-        )
-
-        # Everything succeeded.
-        conn.commit()
-
-        fulfilled_from = ", ".join(
-            f"{name} ({allocated_quantity})"
-            for _, allocated_quantity, name in allocation["parts"]
-        )
-
-        message = (
-            f"Order #{order_id} placed successfully. "
-            f"Ordered {quantity} × {product['name']}. "
-            f"Remaining stock: {remaining_stock}."
-        )
-
-        if fulfilled_from:
-            message += f" Fulfilled from: {fulfilled_from}."
-
-        return {
-            "success": True,
-            "status": "SUCCESS",
-            "message": message,
-            "order_id": order_id,
-            "remaining_stock": remaining_stock,
-            "allocations": [
-                {
-                    "warehouse_id": allocated_warehouse_id,
-                    "warehouse_name": name,
-                    "quantity": allocated_quantity,
-                }
-                for allocated_warehouse_id, allocated_quantity, name
-                in allocation["parts"]
-            ],
-        }
+        return result
 
     except Exception:
         conn.rollback()
@@ -892,6 +681,272 @@ def place_order(
 
     finally:
         conn.close()
+
+
+def apply_place_order(
+    conn,
+    user_id: int,
+    item_id: str,
+    quantity: int,
+    idempotency_key: str,
+    warehouse_id: str | None = None,
+    created_at: str | None = None,
+    record_failures: bool = False,
+):
+    """
+    Place an order inside the caller's open write transaction.
+
+    If ``warehouse_id`` is given the whole order is fulfilled from that
+    warehouse.  Otherwise it is fulfilled from the warehouses holding the
+    most stock first, splitting across warehouses only when necessary.
+
+    The same (user_id, idempotency_key) is applied at most once: a repeat
+    returns the original order and changes nothing.  ``created_at`` lets
+    replicated orders carry the leader's timestamp so every node stores
+    the same row.  With ``record_failures`` a rejected order is written as
+    a failed order row (the Raft log replays need this so every node keeps
+    the same order history); the caller then still commits.
+
+    The caller commits on success and rolls back on failure unless
+    ``record_failures`` is set.
+    """
+
+    warehouse_id = (warehouse_id or "").strip() or None
+
+    def failure(status, message):
+        result = {"success": False, "status": status, "message": message}
+
+        if record_failures and status in (
+            "FAILED_INSUFFICIENT_STOCK",
+            "ITEM_NOT_FOUND",
+            "WAREHOUSE_NOT_FOUND",
+        ):
+            cursor = conn.execute(
+                """
+                INSERT INTO orders
+                    (user_id, item_id, quantity, status, created_at,
+                     sales_history_recorded, idempotency_key, delivery_status)
+                VALUES (?, ?, ?, ?, ?, 0, ?, 'CANCELLED')
+                """,
+                (
+                    user_id,
+                    item_id,
+                    quantity,
+                    status,
+                    created_at or utc_now(),
+                    idempotency_key,
+                ),
+            )
+            result["order_id"] = cursor.lastrowid
+            result["recorded"] = True
+
+        return result
+
+    if (
+        not isinstance(idempotency_key, str)
+        or not idempotency_key.strip()
+    ):
+        return failure(
+            "INVALID_IDEMPOTENCY_KEY",
+            "A valid idempotency key is required.",
+        )
+
+    idempotency_key = idempotency_key.strip()
+
+    if quantity <= 0:
+        return failure(
+            "INVALID_QUANTITY",
+            "Quantity must be greater than zero.",
+        )
+
+    existing_order = conn.execute(
+        """
+        SELECT id, item_id, quantity, status
+        FROM orders
+        WHERE user_id = ?
+        AND idempotency_key = ?
+        """,
+        (user_id, idempotency_key),
+    ).fetchone()
+
+    if existing_order is not None:
+
+        if (
+            existing_order["item_id"] != item_id
+            or existing_order["quantity"] != quantity
+        ):
+            return failure(
+                "IDEMPOTENCY_KEY_CONFLICT",
+                "This key was already used for a different order.",
+            )
+
+        return {
+            "success": existing_order["status"] == "SUCCESS",
+            "status": existing_order["status"],
+            "message": (
+                f"Order #{existing_order['id']} "
+                "was already processed."
+            ),
+            "order_id": existing_order["id"],
+            "duplicate": True,
+        }
+
+    product = conn.execute(
+        """
+        SELECT item_id, name, stock
+        FROM products
+        WHERE item_id = ?
+        """,
+        (item_id,),
+    ).fetchone()
+
+    if product is None:
+        return failure(
+            "ITEM_NOT_FOUND",
+            "The requested product does not exist.",
+        )
+
+    current_stock = product["stock"]
+
+    # Critical inventory check on the total.
+    if current_stock < quantity:
+        return failure(
+            "FAILED_INSUFFICIENT_STOCK",
+            f"Only {current_stock} units of {product['name']} are available.",
+        )
+
+    # Decide which warehouse(s) the units come from.  This also rejects
+    # the order when the chosen warehouse alone cannot cover it.
+    allocation = _allocate_order_stock(
+        conn,
+        item_id,
+        quantity,
+        warehouse_id,
+    )
+
+    if not allocation["success"]:
+        return failure(
+            allocation["status"],
+            allocation["message"].format(product=product["name"]),
+        )
+
+    for allocated_warehouse_id, allocated_quantity, _ in allocation["parts"]:
+        conn.execute(
+            """
+            UPDATE warehouse_stock
+            SET stock = stock - ?
+            WHERE warehouse_id = ?
+              AND item_id = ?
+            """,
+            (allocated_quantity, allocated_warehouse_id, item_id),
+        )
+
+    # Decrease the total stock.
+    conn.execute(
+        """
+        UPDATE products
+        SET stock = stock - ?
+        WHERE item_id = ?
+        """,
+        (quantity, item_id),
+    )
+
+    remaining_stock = current_stock - quantity
+
+    # A successful order is also a sale.  Include it in the most recent
+    # daily observation so the rolling seven-day average, trend, and
+    # forecast all reflect the same transaction as the stock level.
+    _record_sale_in_latest_history(
+        conn,
+        item_id,
+        quantity,
+    )
+
+    created_at = created_at or utc_now()
+
+    # Record the successful order.
+    cursor = conn.execute(
+        """
+        INSERT INTO orders
+            (
+                user_id,
+                item_id,
+                quantity,
+                status,
+                created_at,
+                sales_history_recorded,
+                idempotency_key,
+                delivery_status
+            )
+        VALUES
+            (?, ?, ?, ?, ?, 1, ?, 'PLACED')
+        """,
+        (
+            user_id,
+            item_id,
+            quantity,
+            "SUCCESS",
+            created_at,
+            idempotency_key,
+        ),
+    )
+
+    order_id = cursor.lastrowid
+
+    conn.executemany(
+        """
+        INSERT INTO order_allocations
+            (order_id, warehouse_id, quantity)
+        VALUES
+            (?, ?, ?)
+        """,
+        [
+            (order_id, allocated_warehouse_id, allocated_quantity)
+            for allocated_warehouse_id, allocated_quantity, _
+            in allocation["parts"]
+        ],
+    )
+
+    conn.execute(
+        """
+        INSERT INTO delivery_events
+            (order_id, status, note, updated_by, created_at)
+        VALUES
+            (?, 'PLACED', 'Order placed', ?, ?)
+        """,
+        (order_id, user_id, created_at),
+    )
+
+    fulfilled_from = ", ".join(
+        f"{name} ({allocated_quantity})"
+        for _, allocated_quantity, name in allocation["parts"]
+    )
+
+    message = (
+        f"Order #{order_id} placed successfully. "
+        f"Ordered {quantity} × {product['name']}. "
+        f"Remaining stock: {remaining_stock}."
+    )
+
+    if fulfilled_from:
+        message += f" Fulfilled from: {fulfilled_from}."
+
+    return {
+        "success": True,
+        "status": "SUCCESS",
+        "message": message,
+        "order_id": order_id,
+        "remaining_stock": remaining_stock,
+        "allocations": [
+            {
+                "warehouse_id": allocated_warehouse_id,
+                "warehouse_name": name,
+                "quantity": allocated_quantity,
+            }
+            for allocated_warehouse_id, allocated_quantity, name
+            in allocation["parts"]
+        ],
+    }
 
 
 def _allocate_order_stock(conn, item_id, quantity, warehouse_id=None):
@@ -1371,6 +1426,32 @@ def create_restock_request(
     quantity: int,
     idempotency_key: str,
     note: str = "",
+    created_at: str | None = None,
+):
+    """Run ``apply_create_restock_request`` in its own transaction (single-node use)."""
+    return run_in_transaction(
+        apply_create_restock_request,
+        user_id=user_id,
+        item_id=item_id,
+        warehouse_id=warehouse_id,
+        supplier_id=supplier_id,
+        quantity=quantity,
+        idempotency_key=idempotency_key,
+        note=note,
+        created_at=created_at,
+    )
+
+
+def apply_create_restock_request(
+    conn,
+    user_id: int,
+    item_id: str,
+    warehouse_id: str,
+    supplier_id: str,
+    quantity: int,
+    idempotency_key: str,
+    note: str = "",
+    created_at: str | None = None,
 ):
     """Ask a supplier to deliver more of a product to one warehouse."""
 
@@ -1383,136 +1464,120 @@ def create_restock_request(
 
     note = (note or "").strip()[:500]
 
-    conn = get_connection()
+    existing = conn.execute(
+        """
+        SELECT id, status
+        FROM restock_requests
+        WHERE requested_by = ?
+          AND idempotency_key = ?
+        """,
+        (user_id, idempotency_key),
+    ).fetchone()
 
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-
-        existing = conn.execute(
-            """
-            SELECT id, status
-            FROM restock_requests
-            WHERE requested_by = ?
-              AND idempotency_key = ?
-            """,
-            (user_id, idempotency_key),
-        ).fetchone()
-
-        if existing is not None:
-            conn.rollback()
-
-            return {
-                "success": True,
-                "status": "SUCCESS",
-                "message": (
-                    f"Restock request #{existing['id']} was already "
-                    f"submitted ({existing['status']})."
-                ),
-                "restock_id": existing["id"],
-            }
-
-        product = conn.execute(
-            "SELECT name FROM products WHERE item_id = ?",
-            (item_id,),
-        ).fetchone()
-
-        if product is None:
-            conn.rollback()
-            return {
-                "success": False,
-                "status": "ITEM_NOT_FOUND",
-                "message": "The requested product does not exist.",
-            }
-
-        warehouse = conn.execute(
-            "SELECT name FROM warehouses WHERE warehouse_id = ?",
-            (warehouse_id,),
-        ).fetchone()
-
-        if warehouse is None:
-            conn.rollback()
-            return {
-                "success": False,
-                "status": "WAREHOUSE_NOT_FOUND",
-                "message": "The selected warehouse does not exist.",
-            }
-
-        supplier = conn.execute(
-            "SELECT name FROM suppliers WHERE supplier_id = ?",
-            (supplier_id,),
-        ).fetchone()
-
-        if supplier is None:
-            conn.rollback()
-            return {
-                "success": False,
-                "status": "SUPPLIER_NOT_FOUND",
-                "message": "The selected supplier does not exist.",
-            }
-
-        now = utc_now()
-
-        cursor = conn.execute(
-            """
-            INSERT INTO restock_requests
-                (
-                    item_id,
-                    warehouse_id,
-                    supplier_id,
-                    quantity,
-                    status,
-                    note,
-                    requested_by,
-                    idempotency_key,
-                    created_at,
-                    updated_at
-                )
-            VALUES
-                (?, ?, ?, ?, 'REQUESTED', ?, ?, ?, ?, ?)
-            """,
-            (
-                item_id,
-                warehouse_id,
-                supplier_id,
-                quantity,
-                note,
-                user_id,
-                idempotency_key,
-                now,
-                now,
-            ),
-        )
-
-        restock_id = cursor.lastrowid
-
-        conn.execute(
-            """
-            INSERT INTO restock_events
-                (restock_id, status, note, updated_by, created_at)
-            VALUES
-                (?, 'REQUESTED', ?, ?, ?)
-            """,
-            (restock_id, note or "Restock requested", user_id, now),
-        )
-
-        conn.commit()
+    if existing is not None:
 
         return {
             "success": True,
             "status": "SUCCESS",
             "message": (
-                f"Restock request #{restock_id} sent to {supplier['name']}: "
-                f"{quantity} × {product['name']} for {warehouse['name']}."
+                f"Restock request #{existing['id']} was already "
+                f"submitted ({existing['status']})."
             ),
-            "restock_id": restock_id,
+            "restock_id": existing["id"],
         }
 
-    except Exception:
-        conn.rollback()
-        raise
+    product = conn.execute(
+        "SELECT name FROM products WHERE item_id = ?",
+        (item_id,),
+    ).fetchone()
 
-    finally:
-        conn.close()
+    if product is None:
+        return {
+            "success": False,
+            "status": "ITEM_NOT_FOUND",
+            "message": "The requested product does not exist.",
+        }
+
+    warehouse = conn.execute(
+        "SELECT name FROM warehouses WHERE warehouse_id = ?",
+        (warehouse_id,),
+    ).fetchone()
+
+    if warehouse is None:
+        return {
+            "success": False,
+            "status": "WAREHOUSE_NOT_FOUND",
+            "message": "The selected warehouse does not exist.",
+        }
+
+    supplier = conn.execute(
+        "SELECT name FROM suppliers WHERE supplier_id = ?",
+        (supplier_id,),
+    ).fetchone()
+
+    if supplier is None:
+        return {
+            "success": False,
+            "status": "SUPPLIER_NOT_FOUND",
+            "message": "The selected supplier does not exist.",
+        }
+
+    now = created_at or utc_now()
+
+    cursor = conn.execute(
+        """
+        INSERT INTO restock_requests
+            (
+                item_id,
+                warehouse_id,
+                supplier_id,
+                quantity,
+                status,
+                note,
+                requested_by,
+                idempotency_key,
+                created_at,
+                updated_at
+            )
+        VALUES
+            (?, ?, ?, ?, 'REQUESTED', ?, ?, ?, ?, ?)
+        """,
+        (
+            item_id,
+            warehouse_id,
+            supplier_id,
+            quantity,
+            note,
+            user_id,
+            idempotency_key,
+            now,
+            now,
+        ),
+    )
+
+    restock_id = cursor.lastrowid
+
+    conn.execute(
+        """
+        INSERT INTO restock_events
+            (restock_id, status, note, updated_by, created_at)
+        VALUES
+            (?, 'REQUESTED', ?, ?, ?)
+        """,
+        (restock_id, note or "Restock requested", user_id, now),
+    )
+
+
+    return {
+        "success": True,
+        "status": "SUCCESS",
+        "message": (
+            f"Restock request #{restock_id} sent to {supplier['name']}: "
+            f"{quantity} × {product['name']} for {warehouse['name']}."
+        ),
+        "restock_id": restock_id,
+    }
+
 
 
 def update_restock_status(
@@ -1520,6 +1585,26 @@ def update_restock_status(
     new_status: str,
     user_id: int,
     note: str = "",
+    created_at: str | None = None,
+):
+    """Run ``apply_update_restock_status`` in its own transaction (single-node use)."""
+    return run_in_transaction(
+        apply_update_restock_status,
+        restock_id=restock_id,
+        new_status=new_status,
+        user_id=user_id,
+        note=note,
+        created_at=created_at,
+    )
+
+
+def apply_update_restock_status(
+    conn,
+    restock_id: int,
+    new_status: str,
+    user_id: int,
+    note: str = "",
+    created_at: str | None = None,
 ):
     """
     Move a restock request to its next status.
@@ -1538,134 +1623,120 @@ def update_restock_status(
             "message": f"Unknown restock status: {new_status or '(empty)'}.",
         }
 
-    conn = get_connection()
 
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    request = conn.execute(
+        """
+        SELECT
+            restock_requests.id,
+            restock_requests.item_id,
+            restock_requests.warehouse_id,
+            restock_requests.quantity,
+            restock_requests.status,
+            products.name AS product_name,
+            warehouses.name AS warehouse_name
+        FROM restock_requests
+        JOIN products
+            ON products.item_id = restock_requests.item_id
+        JOIN warehouses
+            ON warehouses.warehouse_id = restock_requests.warehouse_id
+        WHERE restock_requests.id = ?
+        """,
+        (restock_id,),
+    ).fetchone()
 
-        request = conn.execute(
-            """
-            SELECT
-                restock_requests.id,
-                restock_requests.item_id,
-                restock_requests.warehouse_id,
-                restock_requests.quantity,
-                restock_requests.status,
-                products.name AS product_name,
-                warehouses.name AS warehouse_name
-            FROM restock_requests
-            JOIN products
-                ON products.item_id = restock_requests.item_id
-            JOIN warehouses
-                ON warehouses.warehouse_id = restock_requests.warehouse_id
-            WHERE restock_requests.id = ?
-            """,
-            (restock_id,),
-        ).fetchone()
+    if request is None:
+        return {
+            "success": False,
+            "status": "RESTOCK_NOT_FOUND",
+            "message": f"Restock request #{restock_id} does not exist.",
+        }
 
-        if request is None:
-            conn.rollback()
-            return {
-                "success": False,
-                "status": "RESTOCK_NOT_FOUND",
-                "message": f"Restock request #{restock_id} does not exist.",
-            }
+    current_status = request["status"]
 
-        current_status = request["status"]
-
-        if current_status == new_status:
-            conn.rollback()
-            return {
-                "success": True,
-                "status": "SUCCESS",
-                "message": (
-                    f"Restock request #{restock_id} is already {new_status}."
-                ),
-            }
-
-        if new_status not in RESTOCK_TRANSITIONS[current_status]:
-            conn.rollback()
-            return {
-                "success": False,
-                "status": "INVALID_TRANSITION",
-                "message": (
-                    f"Restock request #{restock_id} cannot move from "
-                    f"{current_status} to {new_status}."
-                ),
-            }
-
-        now = utc_now()
-
-        if new_status == "RECEIVED":
-            conn.execute(
-                """
-                INSERT INTO warehouse_stock
-                    (warehouse_id, item_id, stock)
-                VALUES
-                    (?, ?, ?)
-                ON CONFLICT (warehouse_id, item_id)
-                DO UPDATE SET stock = stock + excluded.stock
-                """,
-                (
-                    request["warehouse_id"],
-                    request["item_id"],
-                    request["quantity"],
-                ),
-            )
-
-            conn.execute(
-                """
-                UPDATE products
-                SET stock = stock + ?
-                WHERE item_id = ?
-                """,
-                (request["quantity"], request["item_id"]),
-            )
-
-        conn.execute(
-            """
-            UPDATE restock_requests
-            SET status = ?,
-                updated_at = ?,
-                received_at = CASE WHEN ? = 'RECEIVED' THEN ? ELSE received_at END
-            WHERE id = ?
-            """,
-            (new_status, now, new_status, now, restock_id),
-        )
-
-        conn.execute(
-            """
-            INSERT INTO restock_events
-                (restock_id, status, note, updated_by, created_at)
-            VALUES
-                (?, ?, ?, ?, ?)
-            """,
-            (restock_id, new_status, note, user_id, now),
-        )
-
-        conn.commit()
-
-        message = f"Restock request #{restock_id} is now {new_status}."
-
-        if new_status == "RECEIVED":
-            message += (
-                f" Added {request['quantity']} × {request['product_name']} "
-                f"to {request['warehouse_name']}."
-            )
-
+    if current_status == new_status:
         return {
             "success": True,
             "status": "SUCCESS",
-            "message": message,
-            "stock_changed": new_status == "RECEIVED",
+            "message": (
+                f"Restock request #{restock_id} is already {new_status}."
+            ),
         }
 
-    except Exception:
-        conn.rollback()
-        raise
+    if new_status not in RESTOCK_TRANSITIONS[current_status]:
+        return {
+            "success": False,
+            "status": "INVALID_TRANSITION",
+            "message": (
+                f"Restock request #{restock_id} cannot move from "
+                f"{current_status} to {new_status}."
+            ),
+        }
 
-    finally:
-        conn.close()
+    now = created_at or utc_now()
+
+    if new_status == "RECEIVED":
+        conn.execute(
+            """
+            INSERT INTO warehouse_stock
+                (warehouse_id, item_id, stock)
+            VALUES
+                (?, ?, ?)
+            ON CONFLICT (warehouse_id, item_id)
+            DO UPDATE SET stock = stock + excluded.stock
+            """,
+            (
+                request["warehouse_id"],
+                request["item_id"],
+                request["quantity"],
+            ),
+        )
+
+        conn.execute(
+            """
+            UPDATE products
+            SET stock = stock + ?
+            WHERE item_id = ?
+            """,
+            (request["quantity"], request["item_id"]),
+        )
+
+    conn.execute(
+        """
+        UPDATE restock_requests
+        SET status = ?,
+            updated_at = ?,
+            received_at = CASE WHEN ? = 'RECEIVED' THEN ? ELSE received_at END
+        WHERE id = ?
+        """,
+        (new_status, now, new_status, now, restock_id),
+    )
+
+    conn.execute(
+        """
+        INSERT INTO restock_events
+            (restock_id, status, note, updated_by, created_at)
+        VALUES
+            (?, ?, ?, ?, ?)
+        """,
+        (restock_id, new_status, note, user_id, now),
+    )
+
+
+    message = f"Restock request #{restock_id} is now {new_status}."
+
+    if new_status == "RECEIVED":
+        message += (
+            f" Added {request['quantity']} × {request['product_name']} "
+            f"to {request['warehouse_name']}."
+        )
+
+    return {
+        "success": True,
+        "status": "SUCCESS",
+        "message": message,
+        "stock_changed": new_status == "RECEIVED",
+    }
+
 
 
 def get_restock_requests(limit: int = 50):
@@ -1744,6 +1815,26 @@ def update_delivery_status(
     new_status: str,
     user_id: int,
     note: str = "",
+    created_at: str | None = None,
+):
+    """Run ``apply_update_delivery_status`` in its own transaction (single-node use)."""
+    return run_in_transaction(
+        apply_update_delivery_status,
+        order_id=order_id,
+        new_status=new_status,
+        user_id=user_id,
+        note=note,
+        created_at=created_at,
+    )
+
+
+def apply_update_delivery_status(
+    conn,
+    order_id: int,
+    new_status: str,
+    user_id: int,
+    note: str = "",
+    created_at: str | None = None,
 ):
     """
     Move an order to its next delivery status.
@@ -1762,93 +1853,79 @@ def update_delivery_status(
             "message": f"Unknown delivery status: {new_status or '(empty)'}.",
         }
 
-    conn = get_connection()
 
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    order = conn.execute(
+        """
+        SELECT id, item_id, quantity, status, delivery_status
+        FROM orders
+        WHERE id = ?
+        """,
+        (order_id,),
+    ).fetchone()
 
-        order = conn.execute(
-            """
-            SELECT id, item_id, quantity, status, delivery_status
-            FROM orders
-            WHERE id = ?
-            """,
-            (order_id,),
-        ).fetchone()
+    if order is None:
+        return {
+            "success": False,
+            "status": "ORDER_NOT_FOUND",
+            "message": f"Order #{order_id} does not exist.",
+        }
 
-        if order is None:
-            conn.rollback()
-            return {
-                "success": False,
-                "status": "ORDER_NOT_FOUND",
-                "message": f"Order #{order_id} does not exist.",
-            }
+    current_status = order["delivery_status"]
 
-        current_status = order["delivery_status"]
-
-        if current_status == new_status:
-            conn.rollback()
-            return {
-                "success": True,
-                "status": "SUCCESS",
-                "message": f"Order #{order_id} is already {new_status}.",
-            }
-
-        if new_status not in DELIVERY_TRANSITIONS.get(current_status, set()):
-            conn.rollback()
-            return {
-                "success": False,
-                "status": "INVALID_TRANSITION",
-                "message": (
-                    f"Order #{order_id} cannot move from "
-                    f"{current_status} to {new_status}."
-                ),
-            }
-
-        now = utc_now()
-
-        if new_status == "CANCELLED" and order["status"] == "SUCCESS":
-            _return_order_stock(conn, order)
-
-        conn.execute(
-            """
-            UPDATE orders
-            SET delivery_status = ?
-            WHERE id = ?
-            """,
-            (new_status, order_id),
-        )
-
-        conn.execute(
-            """
-            INSERT INTO delivery_events
-                (order_id, status, note, updated_by, created_at)
-            VALUES
-                (?, ?, ?, ?, ?)
-            """,
-            (order_id, new_status, note, user_id, now),
-        )
-
-        conn.commit()
-
-        message = f"Order #{order_id} is now {new_status.replace('_', ' ')}."
-
-        if new_status == "CANCELLED":
-            message += f" {order['quantity']} units returned to stock."
-
+    if current_status == new_status:
         return {
             "success": True,
             "status": "SUCCESS",
-            "message": message,
-            "stock_changed": new_status == "CANCELLED",
+            "message": f"Order #{order_id} is already {new_status}.",
         }
 
-    except Exception:
-        conn.rollback()
-        raise
+    if new_status not in DELIVERY_TRANSITIONS.get(current_status, set()):
+        return {
+            "success": False,
+            "status": "INVALID_TRANSITION",
+            "message": (
+                f"Order #{order_id} cannot move from "
+                f"{current_status} to {new_status}."
+            ),
+        }
 
-    finally:
-        conn.close()
+    now = created_at or utc_now()
+
+    if new_status == "CANCELLED" and order["status"] == "SUCCESS":
+        _return_order_stock(conn, order)
+
+    conn.execute(
+        """
+        UPDATE orders
+        SET delivery_status = ?
+        WHERE id = ?
+        """,
+        (new_status, order_id),
+    )
+
+    conn.execute(
+        """
+        INSERT INTO delivery_events
+            (order_id, status, note, updated_by, created_at)
+        VALUES
+            (?, ?, ?, ?, ?)
+        """,
+        (order_id, new_status, note, user_id, now),
+    )
+
+
+    message = f"Order #{order_id} is now {new_status.replace('_', ' ')}."
+
+    if new_status == "CANCELLED":
+        message += f" {order['quantity']} units returned to stock."
+
+    return {
+        "success": True,
+        "status": "SUCCESS",
+        "message": message,
+        "stock_changed": new_status == "CANCELLED",
+    }
+
 
 
 def _return_order_stock(conn, order):
@@ -2035,6 +2112,99 @@ def get_deliveries(limit: int = 30):
         )
 
     return deliveries
+
+
+# ============================================================
+# REPLICATED COMMANDS
+#
+# Every write that must be identical on all nodes goes through
+# apply_command.  The Raft leader puts (command_type, command) in its log,
+# and every node, leader included, applies committed entries with this
+# function inside the log-application transaction.  Each command carries
+# the leader's timestamp so the resulting rows match on every node.
+# ============================================================
+
+COMMAND_TYPES = {
+    "PLACE_ORDER",
+    "CREATE_RESTOCK",
+    "UPDATE_RESTOCK",
+    "UPDATE_DELIVERY",
+}
+
+
+def apply_command(conn, command_type, command, created_at=None):
+    """
+    Apply one replicated command inside the caller's open transaction.
+
+    ``command`` is the dict stored in the Raft log.  Returns the same
+    result dictionary as the matching apply_* function.  Failed business
+    outcomes (not enough stock, invalid transition) are ordinary results,
+    not exceptions, so every node records the same decision.  Malformed
+    commands raise ValueError.
+    """
+    if not isinstance(command, dict):
+        raise ValueError("Command must be a JSON object.")
+
+    try:
+        user_id = int(command["user_id"])
+        idempotency_key = str(command["idempotency_key"]).strip()
+
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Command needs user_id and idempotency_key.") from exc
+
+    if user_id <= 0 or not idempotency_key:
+        raise ValueError("Invalid user ID or idempotency key.")
+
+    try:
+        if command_type == "PLACE_ORDER":
+            return apply_place_order(
+                conn,
+                user_id=user_id,
+                item_id=str(command["item_id"]),
+                quantity=int(command["quantity"]),
+                idempotency_key=idempotency_key,
+                warehouse_id=command.get("warehouse_id") or None,
+                created_at=created_at,
+                record_failures=True,
+            )
+
+        if command_type == "CREATE_RESTOCK":
+            return apply_create_restock_request(
+                conn,
+                user_id=user_id,
+                item_id=str(command["item_id"]),
+                warehouse_id=str(command["warehouse_id"]),
+                supplier_id=str(command["supplier_id"]),
+                quantity=int(command["quantity"]),
+                idempotency_key=idempotency_key,
+                note=str(command.get("note", "")),
+                created_at=created_at,
+            )
+
+        if command_type == "UPDATE_RESTOCK":
+            return apply_update_restock_status(
+                conn,
+                restock_id=int(command["restock_id"]),
+                new_status=str(command["status"]),
+                user_id=user_id,
+                note=str(command.get("note", "")),
+                created_at=created_at,
+            )
+
+        if command_type == "UPDATE_DELIVERY":
+            return apply_update_delivery_status(
+                conn,
+                order_id=int(command["order_id"]),
+                new_status=str(command["status"]),
+                user_id=user_id,
+                note=str(command.get("note", "")),
+                created_at=created_at,
+            )
+
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"Malformed {command_type} command: {exc}") from exc
+
+    raise ValueError(f"Unsupported command: {command_type}")
 
 
 # ============================================================

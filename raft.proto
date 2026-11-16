@@ -18,6 +18,7 @@ service RaftService {
     rpc GetStatus(StatusRequest) returns (StatusResponse);
     rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
     rpc SubmitOrder(SubmitOrderRequest) returns (SubmitOrderResponse);
+    rpc SubmitCommand(SubmitCommandRequest) returns (SubmitCommandResponse);
 }
 
 message HeartbeatRequest {
@@ -73,6 +74,28 @@ message SubmitOrderRequest {
     string item_id = 2;
     int32 quantity = 3;
     string idempotency_key = 4;
+    string warehouse_id = 5;
+}
+
+// Generic replicated write.  command_type selects the handler on every node
+// (PLACE_ORDER, CREATE_RESTOCK, UPDATE_RESTOCK, UPDATE_DELIVERY) and
+// command_json carries its arguments.  The same (user_id, idempotency_key)
+// is applied at most once.
+message SubmitCommandRequest {
+    int32 user_id = 1;
+    string command_type = 2;
+    string command_json = 3;
+    string idempotency_key = 4;
+}
+
+message SubmitCommandResponse {
+    bool success = 1;
+    string status = 2;
+    string message = 3;
+    int64 log_index = 4;
+    int64 term = 5;
+    bool committed = 6;
+    bool stock_changed = 7;
 }
 
 message SubmitOrderResponse {

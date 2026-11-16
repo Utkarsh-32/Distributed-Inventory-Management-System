@@ -473,6 +473,37 @@ class ClientServiceServicer(
     def _invalid(message):
         return {"status": "INVALID_DATA", "message": message}
 
+    def _replicate(self, user_id, command_type, command, key):
+        """
+        Send a write to this node's Raft service.  The leader appends it
+        to the replicated log; every node then applies it with the same
+        warehouse-aware logic, so stock stays identical cluster-wide.
+        """
+        raft_result = self.raft_stub.SubmitCommand(
+            raft_pb2.SubmitCommandRequest(
+                user_id=user_id,
+                command_type=command_type,
+                command_json=json.dumps(command),
+                idempotency_key=key,
+            ),
+            timeout=25,
+        )
+
+        result = {
+            "success": raft_result.success,
+            "status": raft_result.status,
+            "message": raft_result.message,
+            "stock_changed": raft_result.stock_changed,
+        }
+
+        if raft_result.status == "NOT_LEADER":
+            result["message"] = (
+                "This node is not the current leader. "
+                "Please retry; the dashboard will find the new leader."
+            )
+
+        return result
+
     def _post_order(self, user_id, data, key):
         try:
             item_id = str(data["item_id"])
@@ -484,23 +515,18 @@ class ClientServiceServicer(
                 "'item_id' and 'quantity'."
             )
 
-        warehouse_id = data.get("warehouse_id") or None
+        warehouse_id = str(data.get("warehouse_id") or "").strip() or None
 
-        raft_result = self.raft_stub.SubmitOrder(
-            raft_pb2.SubmitOrderRequest(
-                user_id=user_id,
-                item_id=item_id,
-                quantity=quantity,
-                idempotency_key=key
-            ),
-            timeout=25
+        result = self._replicate(
+            user_id,
+            "PLACE_ORDER",
+            {
+                "item_id": item_id,
+                "quantity": quantity,
+                "warehouse_id": warehouse_id,
+            },
+            key,
         )
-
-        result = {
-            "success": raft_result.success,
-            "status": raft_result.status,
-            "message": raft_result.message,
-        }
 
         print(
             f"[ORDER] user={user_id} "
@@ -510,6 +536,7 @@ class ClientServiceServicer(
             f"status={result['status']}"
         )
 
+        # An accepted order always changes stock.
         result["stock_changed"] = result["success"]
         return result
 
@@ -526,14 +553,17 @@ class ClientServiceServicer(
                 "'supplier_id' and 'quantity'."
             )
 
-        result = database.create_restock_request(
-            user_id=user_id,
-            item_id=item_id,
-            warehouse_id=warehouse_id,
-            supplier_id=supplier_id,
-            quantity=quantity,
-            idempotency_key=key,
-            note=str(data.get("note", "")),
+        result = self._replicate(
+            user_id,
+            "CREATE_RESTOCK",
+            {
+                "item_id": item_id,
+                "warehouse_id": warehouse_id,
+                "supplier_id": supplier_id,
+                "quantity": quantity,
+                "note": str(data.get("note", "")),
+            },
+            key,
         )
 
         print(
@@ -554,11 +584,15 @@ class ClientServiceServicer(
                 "Restock update must contain 'restock_id' and 'status'."
             )
 
-        result = database.update_restock_status(
-            restock_id=restock_id,
-            new_status=new_status,
-            user_id=user_id,
-            note=str(data.get("note", "")),
+        result = self._replicate(
+            user_id,
+            "UPDATE_RESTOCK",
+            {
+                "restock_id": restock_id,
+                "status": new_status,
+                "note": str(data.get("note", "")),
+            },
+            key,
         )
 
         print(
@@ -578,11 +612,15 @@ class ClientServiceServicer(
                 "Delivery update must contain 'order_id' and 'status'."
             )
 
-        result = database.update_delivery_status(
-            order_id=order_id,
-            new_status=new_status,
-            user_id=user_id,
-            note=str(data.get("note", "")),
+        result = self._replicate(
+            user_id,
+            "UPDATE_DELIVERY",
+            {
+                "order_id": order_id,
+                "status": new_status,
+                "note": str(data.get("note", "")),
+            },
+            key,
         )
 
         print(

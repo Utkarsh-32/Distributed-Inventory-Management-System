@@ -867,129 +867,25 @@ class RaftLogStore:
                     )
 
                 entry = self._entry_from_row(row)
-
-                if entry["command_type"] != "PLACE_ORDER":
-                    raise ValueError(
-                        "Unsupported command: "
-                        + entry["command_type"]
-                    )
-
-                command = entry["command"]
-
-                user_id = command.get("user_id")
-                item_id = command.get("item_id")
-                quantity = command.get("quantity")
                 request_id = entry["request_id"]
-                idempotency_key = command.get("idempotency_key")
-
-                if idempotency_key is None:
-                    idempotency_key = request_id
-
-                if not isinstance(idempotency_key, str) or not idempotency_key.strip():
-                    raise ValueError("Invalid idempotency key.")
-
-                idempotency_key = idempotency_key.strip()
-
-                if type(user_id) is not int or user_id <= 0:
-                    raise ValueError("Invalid user ID.")
-
-                if not isinstance(item_id, str) or not item_id:
-                    raise ValueError("Invalid product ID.")
-
-                if type(quantity) is not int or quantity <= 0:
-                    raise ValueError("Invalid order quantity.")
 
                 if not request_id:
                     raise ValueError("Missing request ID.")
 
-                existing = conn.execute(
-                    """
-                    SELECT id, user_id, item_id, quantity, status
-                    FROM orders
-                    WHERE user_id = ?
-                    AND idempotency_key = ?
-                    """,
-                    (user_id, request_id)
-                ).fetchone()
+                # Every node applies the command with the same business
+                # logic (warehouse allocation, restock receipt, delivery
+                # transitions) in this transaction, so inventory and the
+                # applied index commit together.  Business rejections such
+                # as insufficient stock are results, not errors: they are
+                # recorded identically on every node and the log moves on.
+                result = database.apply_command(
+                    conn,
+                    entry["command_type"],
+                    entry["command"],
+                    created_at=entry["created_at"] or None,
+                )
 
-                if existing is not None:
-
-                    if (
-                        existing["user_id"] != user_id
-                        or existing["item_id"] != item_id
-                        or existing["quantity"] != quantity
-                    ):
-                        raise RuntimeError(
-                            "Request ID conflicts with an existing order."
-                        )
-
-                    result_status = existing["status"]
-
-                else:
-
-                    product = conn.execute(
-                        """
-                        SELECT name, stock
-                        FROM products
-                        WHERE item_id = ?
-                        """,
-                        (item_id,)
-                    ).fetchone()
-
-                    if product is None:
-                        raise RuntimeError(
-                            f"Product {item_id} is missing on this node."
-                        )
-
-                    current_stock = product["stock"]
-
-                    if current_stock >= quantity:
-
-                        conn.execute(
-                            """
-                            UPDATE products
-                            SET stock = stock - ?
-                            WHERE item_id = ?
-                            """,
-                            (quantity, item_id)
-                        )
-
-                        database._record_sale_in_latest_history(
-                            conn,
-                            item_id,
-                            quantity
-                        )
-
-                        result_status = "SUCCESS"
-                        sales_recorded = 1
-
-                    else:
-                        result_status = "FAILED_INSUFFICIENT_STOCK"
-                        sales_recorded = 0
-
-                    conn.execute(
-                        """
-                        INSERT INTO orders (
-                            user_id,
-                            item_id,
-                            quantity,
-                            status,
-                            created_at,
-                            sales_history_recorded,
-                            idempotency_key
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            user_id,
-                            item_id,
-                            quantity,
-                            result_status,
-                            entry["created_at"] or database.utc_now(),
-                            sales_recorded,
-                            request_id
-                        )
-                    )
+                result_status = result.get("status", "UNKNOWN")
 
                 conn.execute(
                     """
@@ -1005,7 +901,8 @@ class RaftLogStore:
                 applied_entries.append({
                     "index": next_index,
                     "request_id": request_id,
-                    "status": result_status
+                    "status": result_status,
+                    "result": result,
                 })
 
             except Exception:

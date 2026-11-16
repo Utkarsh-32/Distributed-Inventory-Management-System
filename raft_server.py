@@ -194,144 +194,178 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
             )
 
     def SubmitOrder(self, request, context):
+        """Backwards-compatible order entry point; see SubmitCommand."""
+        result = self._submit(
+            user_id=request.user_id,
+            command_type="PLACE_ORDER",
+            command={
+                "item_id": request.item_id.strip(),
+                "quantity": request.quantity,
+                "warehouse_id": request.warehouse_id.strip() or None,
+            },
+            idempotency_key=request.idempotency_key.strip(),
+        )
 
-        user_id = request.user_id
-        item_id = request.item_id.strip()
-        quantity = request.quantity
-        idempotency_key = request.idempotency_key.strip()
+        return raft_pb2.SubmitOrderResponse(
+            success=result["success"],
+            status=result["status"],
+            message=result["message"],
+            order_id=result.get("order_id", 0),
+            log_index=result.get("log_index", 0),
+            term=result.get("term", 0),
+            committed=result.get("committed", False),
+        )
 
-        def response(
-            success,
-            status,
-            message,
-            order_id=0,
-            log_index=0,
-            term=0,
-            committed=False
-        ):
-            return raft_pb2.SubmitOrderResponse(
-                success=success,
-                status=status,
-                message=message,
-                order_id=order_id,
-                log_index=log_index,
-                term=term,
-                committed=committed
+    def SubmitCommand(self, request, context):
+        """
+        Replicate one write (order, restock, delivery update) through the
+        log and return the outcome of applying it on this leader.
+        """
+        try:
+            command = json.loads(request.command_json or "{}")
+
+        except json.JSONDecodeError:
+            command = None
+
+        if not isinstance(command, dict):
+            return raft_pb2.SubmitCommandResponse(
+                success=False,
+                status="INVALID_REQUEST",
+                message="Command data must be a JSON object.",
             )
 
-        if user_id <= 0 or not item_id or quantity <= 0 or not idempotency_key:
-            return response(
-                False,
+        result = self._submit(
+            user_id=request.user_id,
+            command_type=request.command_type.strip(),
+            command=command,
+            idempotency_key=request.idempotency_key.strip(),
+        )
+
+        return raft_pb2.SubmitCommandResponse(
+            success=result["success"],
+            status=result["status"],
+            message=result["message"],
+            log_index=result.get("log_index", 0),
+            term=result.get("term", 0),
+            committed=result.get("committed", False),
+            stock_changed=bool(result.get("stock_changed", False)),
+        )
+
+    def _submit(self, user_id, command_type, command, idempotency_key):
+        """
+        Append a command to the log as leader, replicate it, wait for
+        commit, apply it, and return the apply result as a dict.
+        """
+
+        def failure(status, message, **extra):
+            return {
+                "success": False,
+                "status": status,
+                "message": message,
+                **extra,
+            }
+
+        if user_id <= 0 or not idempotency_key:
+            return failure("INVALID_REQUEST", "Invalid request details.")
+
+        if command_type not in database.COMMAND_TYPES:
+            return failure(
                 "INVALID_REQUEST",
-                "Invalid order details."
+                f"Unsupported command type: {command_type or '(empty)'}.",
             )
 
         with self.node.lock:
 
             if self.node.role != "leader":
-                return response(
-                    False,
+                return failure(
                     "NOT_LEADER",
                     "This node is not the current Raft leader.",
-                    term=self.node.current_term
+                    term=self.node.current_term,
                 )
 
             current_term = self.node.current_term
 
-        request_id = f"order:{user_id}:{idempotency_key}"
+        # The request ID makes the (user, key) pair unique in the log, so a
+        # retried submission re-uses the existing entry instead of adding
+        # a second one.
+        request_id = f"{command_type.lower()}:{user_id}:{idempotency_key}"
 
         command = {
+            **command,
             "user_id": user_id,
-            "item_id": item_id,
-            "quantity": quantity,
-            "idempotency_key": idempotency_key
+            "idempotency_key": idempotency_key,
         }
 
         try:
             entry = self.log_store.append_local_entry(
                 term=current_term,
-                command_type="PLACE_ORDER",
+                command_type=command_type,
                 command=command,
-                request_id=request_id
+                request_id=request_id,
             )
 
-            replication_result = self.node.replicate_logs()
+            self.node.replicate_logs()
 
         except Exception as exc:
-            print(f"[RAFT ORDER] Replication error: {exc}", flush=True)
+            print(f"[RAFT {command_type}] Replication error: {exc}", flush=True)
 
-            return response(
-                False,
+            return failure(
                 "REPLICATION_ERROR",
-                "Unable to replicate the order.",
-                term=current_term
+                "Unable to replicate the request.",
+                term=current_term,
             )
 
         state = self.log_store.get_state()
 
         if state["commit_index"] < entry["index"]:
-            return response(
-                False,
+            return failure(
                 "NO_QUORUM",
-                "Order is not committed because a majority was not reached. Retry using the same idempotency key.",
+                "Not committed because a majority was not reached. "
+                "Retry using the same idempotency key.",
                 log_index=entry["index"],
                 term=current_term,
-                committed=False
+                committed=False,
             )
 
         try:
-            self.log_store.apply_committed_entries()
+            applied = self.log_store.apply_committed_entries()
 
         except Exception as exc:
-            print(f"[RAFT ORDER] Application error: {exc}", flush=True)
+            print(f"[RAFT {command_type}] Application error: {exc}", flush=True)
 
-            return response(
-                False,
+            return failure(
                 "COMMITTED_APPLY_PENDING",
-                "Order is committed but inventory application is pending.",
+                "The request is committed but not yet applied.",
                 log_index=entry["index"],
                 term=current_term,
-                committed=True
+                committed=True,
             )
 
-        conn = database.get_connection()
-
-        try:
-            order = conn.execute(
-                """
-                SELECT id, status
-                FROM orders
-                WHERE user_id = ?
-                AND idempotency_key = ?
-                """,
-                (user_id, request_id)
-            ).fetchone()
-
-        finally:
-            conn.close()
-
-        if order is None:
-            return response(
-                False,
-                "ORDER_RESULT_MISSING",
-                "Committed order result could not be found.",
-                log_index=entry["index"],
-                term=current_term,
-                committed=True
-            )
-
-        order_status = order["status"]
-
-        return response(
-            order_status == "SUCCESS",
-            order_status,
-            f"Order #{order['id']}: {order_status}",
-            order_id=order["id"],
-            log_index=entry["index"],
-            term=current_term,
-            committed=True
+        # The entry may have been applied by an earlier call (a retry), in
+        # which case re-applying the command returns the recorded outcome.
+        result = next(
+            (
+                item["result"]
+                for item in applied
+                if item["index"] == entry["index"]
+            ),
+            None,
         )
 
+        if result is None:
+            result = database.run_in_transaction(
+                database.apply_command,
+                command_type=command_type,
+                command=command,
+                created_at=entry.get("created_at") or None,
+            )
+
+        return {
+            **result,
+            "log_index": entry["index"],
+            "term": current_term,
+            "committed": True,
+        }
 
     def GetStatus(self, request, context):
         with self.node.lock:

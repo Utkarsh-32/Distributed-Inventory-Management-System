@@ -2,7 +2,8 @@
 Tests the warehouse, restock and delivery operations through the
 application server's gRPC handlers (ClientServiceServicer.get / post).
 
-The handlers are called directly, so no servers need to be running.
+The handlers are called directly and writes are applied through a local
+stand-in for the Raft service, so no servers need to be running.
 
 Run with:
 
@@ -35,7 +36,34 @@ except ImportError:  # pragma: no cover - lets the test run without grpcio
 import app_server  # noqa: E402
 import database  # noqa: E402
 import inventory_pb2  # noqa: E402
+import raft_pb2  # noqa: E402
 import seed_db  # noqa: E402
+
+
+class LocalRaftStub:
+    """
+    Stands in for the Raft service: applies each command straight to the
+    local database, as a committed single-node cluster would.  The full
+    three-node path is covered by tests/test_raft_warehouse_integration.py.
+    """
+
+    def SubmitCommand(self, request, timeout=None):
+        result = database.run_in_transaction(
+            database.apply_command,
+            command_type=request.command_type,
+            command={
+                **json.loads(request.command_json),
+                "user_id": request.user_id,
+                "idempotency_key": request.idempotency_key,
+            },
+        )
+        return raft_pb2.SubmitCommandResponse(
+            success=result["success"],
+            status=result["status"],
+            message=result["message"],
+            committed=True,
+            stock_changed=bool(result.get("stock_changed", False)),
+        )
 
 
 class WarehouseRpcTests(unittest.TestCase):
@@ -55,6 +83,7 @@ class WarehouseRpcTests(unittest.TestCase):
         self.service.dashboard_lock = threading.Lock()
         self.service.dashboard_cache = {"cached": True}
         self.service.dashboard_cache_created_at = 1.0
+        self.service.raft_stub = LocalRaftStub()
 
         self.token = database.authenticate_user("alice", "password")
         self.key_counter = 0
