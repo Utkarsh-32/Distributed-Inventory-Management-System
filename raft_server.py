@@ -5,7 +5,7 @@ from raft_node import RaftNode
 import argparse
 import threading
 import json
-from raft_replication import RaftLogStore
+from raft_replication import RaftLogStore, RequestIdConflict
 import database
 
 class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
@@ -192,6 +192,48 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
                 conflict_index=result.get("conflict_index", 0),
                 reason=result.get("reason", "")
             )
+
+    def TransferStock(self, request, context):
+        reply = raft_pb2.TransferResponse
+        source = request.source.strip()
+        destination = request.destination.strip()
+        item = request.item_id.strip()
+        key = request.idempotency_key.strip()
+        if not all((source, destination, item, key)) or request.user_id <= 0 or request.quantity <= 0:
+            return reply(status="INVALID_REQUEST", message="Select a product, two warehouses and a positive quantity.")
+        if source == destination:
+            return reply(status="INVALID_REQUEST", message="Choose two different warehouses.")
+        with self.node.lock:
+            if self.node.role != "leader":
+                return reply(status="NOT_LEADER", message="Leadership changed. Retry this transfer.")
+            term = self.node.current_term
+
+        request_id = f"transfer:{request.user_id}:{key}"
+        command = dict(item_id=item, source=source, destination=destination, quantity=request.quantity)
+        try:
+            entry = self.log_store.append_local_entry(term, "TRANSFER_STOCK", command, request_id)
+        except RequestIdConflict:
+            return reply(status="KEY_CONFLICT", message="This transfer key already belongs to a different request.")
+        except ValueError:
+            return reply(status="RETRY", message="Leadership changed. Retry this transfer.")
+        self.node.replicate_logs()
+        if self.log_store.get_state()["commit_index"] < entry["index"]:
+            return reply(status="RETRY", message="Waiting for a majority. Retry this transfer.")
+        self.log_store.apply_committed_entries()
+        conn = database.get_connection()
+        try:
+            status = conn.execute(
+                "SELECT status FROM warehouse_transfers WHERE request_id=?", (request_id,)
+            ).fetchone()["status"]
+        finally:
+            conn.close()
+        messages = {
+            "SUCCESS": f"Moved {request.quantity} units of {item} from {source} to {destination}.",
+            "FAILED_INSUFFICIENT_STOCK": "Transfer declined. The source warehouse has insufficient stock.",
+            "WAREHOUSE_NOT_FOUND": "The selected warehouse does not exist.",
+            "ITEM_NOT_FOUND": "The selected product does not exist."
+        }
+        return reply(status=status, message=messages[status])
 
     def SubmitOrder(self, request, context):
 

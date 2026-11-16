@@ -17,6 +17,7 @@ service RaftService {
     rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
     rpc GetStatus(StatusRequest) returns (StatusResponse);
     rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+    rpc TransferStock(TransferRequest) returns (TransferResponse);
     rpc SubmitOrder(SubmitOrderRequest) returns (SubmitOrderResponse);
 }
 
@@ -68,6 +69,20 @@ message AppendEntriesResponse {
     int64 match_index = 3;
     int64 conflict_index = 4;
     string reason = 5;
+}
+
+message TransferRequest {
+    int32 user_id = 1;
+    string item_id = 2;
+    string source = 3;
+    string destination = 4;
+    int32 quantity = 5;
+    string idempotency_key = 6;
+}
+
+message TransferResponse {
+    string status = 1;
+    string message = 2;
 }
 
 message SubmitOrderRequest {

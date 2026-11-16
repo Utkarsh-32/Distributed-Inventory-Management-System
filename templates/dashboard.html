@@ -308,6 +308,30 @@
     <!-- SUPPLIER RESTOCK REQUESTS -->
     <!-- ============================================ -->
 
+    {% if warehouses|length >= 2 and inventory %}
+    {% set retry = request.query_params %}
+    <section class="card" id="transfers">
+        <h2>Warehouse transfers</h2>
+        <form method="post" action="/transfer" class="restock-form">
+            <input type="hidden" name="idempotency_key" class="idempotency_key" value="{{ retry.get('transfer_key', '') }}">
+            <label>Product <select name="item_id" required>
+                {% for item in inventory %}
+                <option value="{{ item.item_id }}" {% if retry.get('transfer_item_id') == item.item_id %}selected{% endif %}>{{ item.name }}</option>
+                {% endfor %}
+            </select></label>
+            {% for field, label in [('source', 'From warehouse'), ('destination', 'To warehouse')] %}
+            <label>{{ label }} <select name="{{ field }}" required>
+                {% for warehouse in warehouses %}
+                <option value="{{ warehouse.warehouse_id }}" {% if retry.get('transfer_' ~ field) == warehouse.warehouse_id or (not retry.get('transfer_' ~ field) and field == 'destination' and loop.index == 2) %}selected{% endif %}>{{ warehouse.name }}</option>
+                {% endfor %}
+            </select></label>
+            {% endfor %}
+            <label>Units <input type="number" name="quantity" min="1" max="2147483647" required value="{{ retry.get('transfer_quantity', '') }}"></label>
+            <button type="submit">Transfer stock</button>
+        </form>
+    </section>
+    {% endif %}
+
     {% if warehouses and suppliers %}
 
     {% set restock_actions = {

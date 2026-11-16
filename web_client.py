@@ -1,7 +1,7 @@
 import json
 import os
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlencode
 
 import grpc
 import uuid
@@ -678,9 +678,8 @@ def post_and_redirect(
             detail="Idempotency key is required.",
         )
 
-    stub = get_stub()
-
     try:
+        stub = get_stub()
         response = stub.post(
             inventory_pb2.PostRequest(
                 token=token,
@@ -691,7 +690,7 @@ def post_and_redirect(
             timeout=10,
         )
 
-    except grpc.RpcError:
+    except (grpc.RpcError, HTTPException):
         status = "ERROR"
         message_text = "Application Server is unavailable. Please try again."
 
@@ -715,11 +714,16 @@ def post_and_redirect(
     if operation == "order" and message_type == "error":
         anchor = "#dashboard-message"
 
+    retry_query = ""
+    if operation == "transfer" and status in {"RETRY", "NOT_LEADER", "RAFT_UNAVAILABLE", "INTERNAL_ERROR", "ERROR"}:
+        retry_query = "&" + urlencode({f"transfer_{k}": v for k, v in {**data, "key": idempotency_key}.items()})
+        message_text += " Submit the same transfer again to check its result."
+
     return RedirectResponse(
         (
             f"/dashboard?"
             f"message={quote_plus(message_text)}"
-            f"&message_type={message_type}"
+            f"&message_type={message_type}{retry_query}"
             f"{anchor}"
         ),
         status_code=303,
@@ -729,6 +733,16 @@ def post_and_redirect(
 # ============================================================
 # PLACE ORDER
 # ============================================================
+
+@app.post("/transfer")
+def transfer_stock(request: Request, item_id: str = Form(...), source: str = Form(...),
+                   destination: str = Form(...), quantity: int = Form(...),
+                   idempotency_key: str = Form(...)):
+    return post_and_redirect(
+        request, "transfer", dict(item_id=item_id, source=source, destination=destination,
+                                  quantity=quantity), idempotency_key, section="dashboard-message"
+    )
+
 
 @app.post("/order")
 def place_order(
