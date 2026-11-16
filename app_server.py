@@ -398,7 +398,9 @@ class ClientServiceServicer(
         # --------------------------------------------------------
 
         handlers = {
+            "transfer": self._post_transfer,
             "order": self._post_order,
+            "checkout_shortage": self._post_checkout_shortage,
             "restock_request": self._post_restock_request,
             "restock_status": self._post_restock_status,
             "delivery_status": self._post_delivery_status,
@@ -473,6 +475,48 @@ class ClientServiceServicer(
     def _invalid(message):
         return {"status": "INVALID_DATA", "message": message}
 
+    def _replicate(self, user_id, command_type, command, key):
+        """
+        Send a write to this node's Raft service.  The leader appends it
+        to the replicated log; every node then applies it with the same
+        warehouse-aware logic, so stock stays identical cluster-wide.
+        """
+        raft_result = self.raft_stub.SubmitCommand(
+            raft_pb2.SubmitCommandRequest(
+                user_id=user_id,
+                command_type=command_type,
+                command_json=json.dumps(command),
+                idempotency_key=key,
+            ),
+            timeout=25,
+        )
+
+        result = {
+            "success": raft_result.success,
+            "status": raft_result.status,
+            "message": raft_result.message,
+            "stock_changed": raft_result.stock_changed,
+        }
+
+        if raft_result.status == "NOT_LEADER":
+            result["message"] = (
+                "This node is not the current leader. "
+                "Please retry; the dashboard will find the new leader."
+            )
+
+        return result
+
+    def _post_transfer(self, user_id, data, key):
+        try:
+            transfer = raft_pb2.TransferRequest(
+                user_id=user_id, item_id=data["item_id"], source=data["source"],
+                destination=data["destination"], quantity=data["quantity"], idempotency_key=key
+            )
+        except (TypeError, KeyError, ValueError):
+            return self._invalid("Invalid transfer details.")
+        result = self.raft_stub.TransferStock(transfer, timeout=8)
+        return {"status": result.status, "message": result.message, "stock_changed": result.status == "SUCCESS"}
+
     def _post_order(self, user_id, data, key):
         try:
             item_id = str(data["item_id"])
@@ -514,6 +558,9 @@ class ClientServiceServicer(
         result["stock_changed"] = result["success"]
         return result
 
+    def _post_checkout_shortage(self, user_id, data, key):
+        return self._replicate(user_id, "CHECKOUT_SHORTAGE", data, key)
+
     def _post_restock_request(self, user_id, data, key):
         try:
             item_id = str(data["item_id"])
@@ -527,14 +574,17 @@ class ClientServiceServicer(
                 "'supplier_id' and 'quantity'."
             )
 
-        result = database.create_restock_request(
-            user_id=user_id,
-            item_id=item_id,
-            warehouse_id=warehouse_id,
-            supplier_id=supplier_id,
-            quantity=quantity,
-            idempotency_key=key,
-            note=str(data.get("note", "")),
+        result = self._replicate(
+            user_id,
+            "CREATE_RESTOCK",
+            {
+                "item_id": item_id,
+                "warehouse_id": warehouse_id,
+                "supplier_id": supplier_id,
+                "quantity": quantity,
+                "note": str(data.get("note", "")),
+            },
+            key,
         )
 
         print(
@@ -555,11 +605,15 @@ class ClientServiceServicer(
                 "Restock update must contain 'restock_id' and 'status'."
             )
 
-        result = database.update_restock_status(
-            restock_id=restock_id,
-            new_status=new_status,
-            user_id=user_id,
-            note=str(data.get("note", "")),
+        result = self._replicate(
+            user_id,
+            "UPDATE_RESTOCK",
+            {
+                "restock_id": restock_id,
+                "status": new_status,
+                "note": str(data.get("note", "")),
+            },
+            key,
         )
 
         print(

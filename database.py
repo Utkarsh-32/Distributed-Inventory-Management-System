@@ -19,6 +19,7 @@ DB_PATH = Path(
 
 # A warehouse holding this many units of a product or fewer is "low stock".
 LOW_STOCK_THRESHOLD = 5
+REORDER_TARGET = 2 * LOW_STOCK_THRESHOLD
 
 
 # ============================================================
@@ -201,6 +202,15 @@ def initialize_database():
         -- RAFT LOG STORAGE
         -- =================================================
 
+        CREATE TABLE IF NOT EXISTS warehouse_transfers (
+            request_id TEXT PRIMARY KEY,
+            item_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            destination TEXT NOT NULL,
+            quantity INTEGER NOT NULL,
+            status TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS raft_log (
             log_index INTEGER PRIMARY KEY,
             term INTEGER NOT NULL CHECK (term >= 0),
@@ -330,6 +340,16 @@ def initialize_database():
                 REFERENCES users(id),
             UNIQUE (requested_by, idempotency_key)
         );
+
+        CREATE TABLE IF NOT EXISTS automatic_restocks (
+            restock_id INTEGER PRIMARY KEY REFERENCES restock_requests(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS restock_command_results (
+            request_id TEXT PRIMARY KEY,
+            result_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_restock_open_item
+            ON restock_requests(item_id, warehouse_id, status);
 
         CREATE TABLE IF NOT EXISTS restock_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -639,7 +659,7 @@ def place_order(
 
     If ``warehouse_id`` is given the whole order is fulfilled from that
     warehouse.  Otherwise it is fulfilled from the warehouses holding the
-    most stock first, splitting across warehouses only when necessary.
+    most stock first. Orders too large for one warehouse are split in proportion to stock.
 
     Returns a dictionary describing the result.
     """
@@ -776,6 +796,8 @@ def place_order(
                 (allocated_quantity, allocated_warehouse_id, item_id),
             )
 
+            request_low_stock_reorder(conn, item_id, allocated_warehouse_id, user_id, utc_now())
+
         # Decrease the total stock.
         conn.execute(
             """
@@ -894,7 +916,7 @@ def place_order(
         conn.close()
 
 
-def _allocate_order_stock(conn, item_id, quantity, warehouse_id=None):
+def _allocate_order_stock(conn, item_id, quantity, warehouse_id=None, *, balanced=True):
     """
     Work out which warehouses fulfil an order.
 
@@ -957,22 +979,8 @@ def _allocate_order_stock(conn, item_id, quantity, warehouse_id=None):
     if not rows:
         return {"success": True, "parts": []}
 
-    parts = []
-    remaining = quantity
-
-    for row in rows:
-        if remaining == 0:
-            break
-
-        take = min(row["stock"], remaining)
-
-        if take > 0:
-            parts.append((row["warehouse_id"], take, row["name"]))
-            remaining -= take
-
-    if remaining > 0:
-        available = quantity - remaining
-
+    available = sum(row["stock"] for row in rows)
+    if quantity > available:
         return {
             "success": False,
             "status": "FAILED_INSUFFICIENT_STOCK",
@@ -982,6 +990,26 @@ def _allocate_order_stock(conn, item_id, quantity, warehouse_id=None):
             ),
         }
 
+    if balanced and quantity > rows[0]["stock"]:
+        # Largest-remainder apportionment keeps whole-unit shares proportional.
+        shares = [divmod(quantity * row["stock"], available) for row in rows]
+        quantities = [whole for whole, _ in shares]
+        extra = quantity - sum(quantities)
+        ranked = sorted(range(len(rows)), key=lambda i: (-shares[i][1], rows[i]["warehouse_id"]))
+        for index in ranked[:extra]:
+            quantities[index] += 1
+    else:
+        quantities = []
+        remaining = quantity
+        for row in rows:
+            take = min(row["stock"], remaining)
+            quantities.append(take)
+            remaining -= take
+            if not remaining:
+                break
+
+    parts = [(row["warehouse_id"], units, row["name"])
+             for row, units in zip(rows, quantities) if units]
     return {"success": True, "parts": parts}
 
 
@@ -1338,6 +1366,7 @@ def get_warehouse_stock():
             for row in product_rows
         ],
         "low_stock_threshold": LOW_STOCK_THRESHOLD,
+        "reorder_target": REORDER_TARGET,
     }
 
 
@@ -1363,6 +1392,36 @@ def get_suppliers():
         conn.close()
 
 
+def run_in_transaction(apply_function, **kwargs):
+    """
+    Run one of the ``apply_*`` write functions in a fresh write transaction.
+
+    BEGIN IMMEDIATE obtains the write lock up front, so only one writer can
+    perform a stock-changing transaction at a time.  The transaction is
+    committed when the function reports success and rolled back otherwise.
+    """
+    conn = get_connection()
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+
+        result = apply_function(conn, **kwargs)
+
+        if result.get("success"):
+            conn.commit()
+        else:
+            conn.rollback()
+
+        return result
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
+
+
 def create_restock_request(
     user_id: int,
     item_id: str,
@@ -1371,6 +1430,32 @@ def create_restock_request(
     quantity: int,
     idempotency_key: str,
     note: str = "",
+    created_at: str | None = None,
+):
+    """Run ``apply_create_restock_request`` in its own transaction (single-node use)."""
+    return run_in_transaction(
+        apply_create_restock_request,
+        user_id=user_id,
+        item_id=item_id,
+        warehouse_id=warehouse_id,
+        supplier_id=supplier_id,
+        quantity=quantity,
+        idempotency_key=idempotency_key,
+        note=note,
+        created_at=created_at,
+    )
+
+
+def apply_create_restock_request(
+    conn,
+    user_id: int,
+    item_id: str,
+    warehouse_id: str,
+    supplier_id: str,
+    quantity: int,
+    idempotency_key: str,
+    note: str = "",
+    created_at: str | None = None,
 ):
     """Ask a supplier to deliver more of a product to one warehouse."""
 
@@ -1383,136 +1468,120 @@ def create_restock_request(
 
     note = (note or "").strip()[:500]
 
-    conn = get_connection()
+    existing = conn.execute(
+        """
+        SELECT id, status
+        FROM restock_requests
+        WHERE requested_by = ?
+          AND idempotency_key = ?
+        """,
+        (user_id, idempotency_key),
+    ).fetchone()
 
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-
-        existing = conn.execute(
-            """
-            SELECT id, status
-            FROM restock_requests
-            WHERE requested_by = ?
-              AND idempotency_key = ?
-            """,
-            (user_id, idempotency_key),
-        ).fetchone()
-
-        if existing is not None:
-            conn.rollback()
-
-            return {
-                "success": True,
-                "status": "SUCCESS",
-                "message": (
-                    f"Restock request #{existing['id']} was already "
-                    f"submitted ({existing['status']})."
-                ),
-                "restock_id": existing["id"],
-            }
-
-        product = conn.execute(
-            "SELECT name FROM products WHERE item_id = ?",
-            (item_id,),
-        ).fetchone()
-
-        if product is None:
-            conn.rollback()
-            return {
-                "success": False,
-                "status": "ITEM_NOT_FOUND",
-                "message": "The requested product does not exist.",
-            }
-
-        warehouse = conn.execute(
-            "SELECT name FROM warehouses WHERE warehouse_id = ?",
-            (warehouse_id,),
-        ).fetchone()
-
-        if warehouse is None:
-            conn.rollback()
-            return {
-                "success": False,
-                "status": "WAREHOUSE_NOT_FOUND",
-                "message": "The selected warehouse does not exist.",
-            }
-
-        supplier = conn.execute(
-            "SELECT name FROM suppliers WHERE supplier_id = ?",
-            (supplier_id,),
-        ).fetchone()
-
-        if supplier is None:
-            conn.rollback()
-            return {
-                "success": False,
-                "status": "SUPPLIER_NOT_FOUND",
-                "message": "The selected supplier does not exist.",
-            }
-
-        now = utc_now()
-
-        cursor = conn.execute(
-            """
-            INSERT INTO restock_requests
-                (
-                    item_id,
-                    warehouse_id,
-                    supplier_id,
-                    quantity,
-                    status,
-                    note,
-                    requested_by,
-                    idempotency_key,
-                    created_at,
-                    updated_at
-                )
-            VALUES
-                (?, ?, ?, ?, 'REQUESTED', ?, ?, ?, ?, ?)
-            """,
-            (
-                item_id,
-                warehouse_id,
-                supplier_id,
-                quantity,
-                note,
-                user_id,
-                idempotency_key,
-                now,
-                now,
-            ),
-        )
-
-        restock_id = cursor.lastrowid
-
-        conn.execute(
-            """
-            INSERT INTO restock_events
-                (restock_id, status, note, updated_by, created_at)
-            VALUES
-                (?, 'REQUESTED', ?, ?, ?)
-            """,
-            (restock_id, note or "Restock requested", user_id, now),
-        )
-
-        conn.commit()
+    if existing is not None:
 
         return {
             "success": True,
             "status": "SUCCESS",
             "message": (
-                f"Restock request #{restock_id} sent to {supplier['name']}: "
-                f"{quantity} × {product['name']} for {warehouse['name']}."
+                f"Restock request #{existing['id']} was already "
+                f"submitted ({existing['status']})."
             ),
-            "restock_id": restock_id,
+            "restock_id": existing["id"],
         }
 
-    except Exception:
-        conn.rollback()
-        raise
+    product = conn.execute(
+        "SELECT name FROM products WHERE item_id = ?",
+        (item_id,),
+    ).fetchone()
 
-    finally:
-        conn.close()
+    if product is None:
+        return {
+            "success": False,
+            "status": "ITEM_NOT_FOUND",
+            "message": "The requested product does not exist.",
+        }
+
+    warehouse = conn.execute(
+        "SELECT name FROM warehouses WHERE warehouse_id = ?",
+        (warehouse_id,),
+    ).fetchone()
+
+    if warehouse is None:
+        return {
+            "success": False,
+            "status": "WAREHOUSE_NOT_FOUND",
+            "message": "The selected warehouse does not exist.",
+        }
+
+    supplier = conn.execute(
+        "SELECT name FROM suppliers WHERE supplier_id = ?",
+        (supplier_id,),
+    ).fetchone()
+
+    if supplier is None:
+        return {
+            "success": False,
+            "status": "SUPPLIER_NOT_FOUND",
+            "message": "The selected supplier does not exist.",
+        }
+
+    now = created_at or utc_now()
+
+    cursor = conn.execute(
+        """
+        INSERT INTO restock_requests
+            (
+                item_id,
+                warehouse_id,
+                supplier_id,
+                quantity,
+                status,
+                note,
+                requested_by,
+                idempotency_key,
+                created_at,
+                updated_at
+            )
+        VALUES
+            (?, ?, ?, ?, 'REQUESTED', ?, ?, ?, ?, ?)
+        """,
+        (
+            item_id,
+            warehouse_id,
+            supplier_id,
+            quantity,
+            note,
+            user_id,
+            idempotency_key,
+            now,
+            now,
+        ),
+    )
+
+    restock_id = cursor.lastrowid
+
+    conn.execute(
+        """
+        INSERT INTO restock_events
+            (restock_id, status, note, updated_by, created_at)
+        VALUES
+            (?, 'REQUESTED', ?, ?, ?)
+        """,
+        (restock_id, note or "Restock requested", user_id, now),
+    )
+
+
+    return {
+        "success": True,
+        "status": "SUCCESS",
+        "message": (
+            f"Restock request #{restock_id} sent to {supplier['name']}: "
+            f"{quantity} × {product['name']} for {warehouse['name']}."
+        ),
+        "restock_id": restock_id,
+    }
+
 
 
 def update_restock_status(
@@ -1520,6 +1589,26 @@ def update_restock_status(
     new_status: str,
     user_id: int,
     note: str = "",
+    created_at: str | None = None,
+):
+    """Run ``apply_update_restock_status`` in its own transaction (single-node use)."""
+    return run_in_transaction(
+        apply_update_restock_status,
+        restock_id=restock_id,
+        new_status=new_status,
+        user_id=user_id,
+        note=note,
+        created_at=created_at,
+    )
+
+
+def apply_update_restock_status(
+    conn,
+    restock_id: int,
+    new_status: str,
+    user_id: int,
+    note: str = "",
+    created_at: str | None = None,
 ):
     """
     Move a restock request to its next status.
@@ -1538,134 +1627,186 @@ def update_restock_status(
             "message": f"Unknown restock status: {new_status or '(empty)'}.",
         }
 
-    conn = get_connection()
 
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    request = conn.execute(
+        """
+        SELECT
+            restock_requests.id,
+            restock_requests.item_id,
+            restock_requests.warehouse_id,
+            restock_requests.quantity,
+            restock_requests.status,
+            products.name AS product_name,
+            warehouses.name AS warehouse_name
+        FROM restock_requests
+        JOIN products
+            ON products.item_id = restock_requests.item_id
+        JOIN warehouses
+            ON warehouses.warehouse_id = restock_requests.warehouse_id
+        WHERE restock_requests.id = ?
+        """,
+        (restock_id,),
+    ).fetchone()
 
-        request = conn.execute(
-            """
-            SELECT
-                restock_requests.id,
-                restock_requests.item_id,
-                restock_requests.warehouse_id,
-                restock_requests.quantity,
-                restock_requests.status,
-                products.name AS product_name,
-                warehouses.name AS warehouse_name
-            FROM restock_requests
-            JOIN products
-                ON products.item_id = restock_requests.item_id
-            JOIN warehouses
-                ON warehouses.warehouse_id = restock_requests.warehouse_id
-            WHERE restock_requests.id = ?
-            """,
-            (restock_id,),
-        ).fetchone()
+    if request is None:
+        return {
+            "success": False,
+            "status": "RESTOCK_NOT_FOUND",
+            "message": f"Restock request #{restock_id} does not exist.",
+        }
 
-        if request is None:
-            conn.rollback()
-            return {
-                "success": False,
-                "status": "RESTOCK_NOT_FOUND",
-                "message": f"Restock request #{restock_id} does not exist.",
-            }
+    current_status = request["status"]
 
-        current_status = request["status"]
-
-        if current_status == new_status:
-            conn.rollback()
-            return {
-                "success": True,
-                "status": "SUCCESS",
-                "message": (
-                    f"Restock request #{restock_id} is already {new_status}."
-                ),
-            }
-
-        if new_status not in RESTOCK_TRANSITIONS[current_status]:
-            conn.rollback()
-            return {
-                "success": False,
-                "status": "INVALID_TRANSITION",
-                "message": (
-                    f"Restock request #{restock_id} cannot move from "
-                    f"{current_status} to {new_status}."
-                ),
-            }
-
-        now = utc_now()
-
-        if new_status == "RECEIVED":
-            conn.execute(
-                """
-                INSERT INTO warehouse_stock
-                    (warehouse_id, item_id, stock)
-                VALUES
-                    (?, ?, ?)
-                ON CONFLICT (warehouse_id, item_id)
-                DO UPDATE SET stock = stock + excluded.stock
-                """,
-                (
-                    request["warehouse_id"],
-                    request["item_id"],
-                    request["quantity"],
-                ),
-            )
-
-            conn.execute(
-                """
-                UPDATE products
-                SET stock = stock + ?
-                WHERE item_id = ?
-                """,
-                (request["quantity"], request["item_id"]),
-            )
-
-        conn.execute(
-            """
-            UPDATE restock_requests
-            SET status = ?,
-                updated_at = ?,
-                received_at = CASE WHEN ? = 'RECEIVED' THEN ? ELSE received_at END
-            WHERE id = ?
-            """,
-            (new_status, now, new_status, now, restock_id),
-        )
-
-        conn.execute(
-            """
-            INSERT INTO restock_events
-                (restock_id, status, note, updated_by, created_at)
-            VALUES
-                (?, ?, ?, ?, ?)
-            """,
-            (restock_id, new_status, note, user_id, now),
-        )
-
-        conn.commit()
-
-        message = f"Restock request #{restock_id} is now {new_status}."
-
-        if new_status == "RECEIVED":
-            message += (
-                f" Added {request['quantity']} × {request['product_name']} "
-                f"to {request['warehouse_name']}."
-            )
-
+    if current_status == new_status:
         return {
             "success": True,
             "status": "SUCCESS",
-            "message": message,
-            "stock_changed": new_status == "RECEIVED",
+            "message": (
+                f"Restock request #{restock_id} is already {new_status}."
+            ),
         }
 
-    except Exception:
-        conn.rollback()
-        raise
+    if new_status not in RESTOCK_TRANSITIONS[current_status]:
+        return {
+            "success": False,
+            "status": "INVALID_TRANSITION",
+            "message": (
+                f"Restock request #{restock_id} cannot move from "
+                f"{current_status} to {new_status}."
+            ),
+        }
 
-    finally:
-        conn.close()
+    now = created_at or utc_now()
+
+    if new_status == "RECEIVED":
+        conn.execute(
+            """
+            INSERT INTO warehouse_stock
+                (warehouse_id, item_id, stock)
+            VALUES
+                (?, ?, ?)
+            ON CONFLICT (warehouse_id, item_id)
+            DO UPDATE SET stock = stock + excluded.stock
+            """,
+            (
+                request["warehouse_id"],
+                request["item_id"],
+                request["quantity"],
+            ),
+        )
+
+        conn.execute(
+            """
+            UPDATE products
+            SET stock = stock + ?
+            WHERE item_id = ?
+            """,
+            (request["quantity"], request["item_id"]),
+        )
+
+    conn.execute(
+        """
+        UPDATE restock_requests
+        SET status = ?,
+            updated_at = ?,
+            received_at = CASE WHEN ? = 'RECEIVED' THEN ? ELSE received_at END
+        WHERE id = ?
+        """,
+        (new_status, now, new_status, now, restock_id),
+    )
+
+    conn.execute(
+        """
+        INSERT INTO restock_events
+            (restock_id, status, note, updated_by, created_at)
+        VALUES
+            (?, ?, ?, ?, ?)
+        """,
+        (restock_id, new_status, note, user_id, now),
+    )
+
+
+    message = f"Restock request #{restock_id} is now {new_status}."
+
+    if new_status == "RECEIVED":
+        message += (
+            f" Added {request['quantity']} × {request['product_name']} "
+            f"to {request['warehouse_name']}."
+        )
+
+    return {
+        "success": True,
+        "status": "SUCCESS",
+        "message": message,
+        "stock_changed": new_status == "RECEIVED",
+    }
+
+
+
+def apply_checkout_shortage(conn, item_id, quantity, confirmed_shortage, user_id, created_at):
+    """Request only uncovered demand; no sale or reservation is recorded."""
+    if not 0 < confirmed_shortage <= quantity <= 2147483647:
+        return {"success": False, "status": "INVALID_REQUEST", "message": "Invalid shortage quantity."}
+    item = conn.execute("SELECT stock FROM products WHERE item_id=?", (item_id,)).fetchone()
+    if item is None:
+        return {"success": False, "status": "ITEM_NOT_FOUND", "message": "Product no longer available."}
+    incoming = conn.execute(
+        "SELECT COALESCE(SUM(quantity),0) FROM restock_requests WHERE item_id=? "
+        "AND status IN ('REQUESTED','APPROVED','SHIPPED')", (item_id,)
+    ).fetchone()[0]
+    gap = quantity - item["stock"]
+    needed = gap - incoming
+    if needed <= 0:
+        message = ("Enough stock is available. Submit your order again." if gap <= 0 else
+                   "Incoming stock already covers the shortage. Place your order after receipt.")
+        return {"success": True, "status": "SUCCESS", "message": message}
+    if needed > confirmed_shortage:
+        return {"success": False, "status": "STOCK_CHANGED",
+                "message": "Stock changed. Review the new shortage before confirming."}
+    supplier = conn.execute("SELECT supplier_id FROM suppliers ORDER BY lead_time_days,supplier_id LIMIT 1").fetchone()
+    warehouse = conn.execute(
+        "SELECT w.warehouse_id FROM warehouses w LEFT JOIN warehouse_stock s "
+        "ON s.warehouse_id=w.warehouse_id AND s.item_id=? "
+        "ORDER BY COALESCE(s.stock,0), w.warehouse_id LIMIT 1", (item_id,)
+    ).fetchone()
+    if not supplier or not warehouse:
+        return {"success": False, "status": "RESTOCK_UNAVAILABLE",
+                "message": "A supplier and receiving warehouse are required to request stock."}
+    result = apply_create_restock_request(
+        conn, user_id, item_id, warehouse[0], supplier[0], needed, None,
+        note=f"Checkout shortage for {quantity} units.", created_at=created_at
+    )
+    if result["success"]:
+        result["message"] += " Place your order after the shipment is received."
+    return result
+
+
+def request_low_stock_reorder(conn, item_id, warehouse_id, user_id, created_at):
+    """Called after a successful debit, inside the same write transaction."""
+    row = conn.execute(
+        "SELECT stock FROM warehouse_stock WHERE item_id=? AND warehouse_id=?",
+        (item_id, warehouse_id),
+    ).fetchone()
+    if row is None or row["stock"] > LOW_STOCK_THRESHOLD:
+        return
+    pending = conn.execute(
+        "SELECT 1 FROM restock_requests WHERE item_id=? AND warehouse_id=? "
+        "AND status IN ('REQUESTED','APPROVED','SHIPPED') LIMIT 1",
+        (item_id, warehouse_id),
+    ).fetchone()
+    if pending:
+        return
+    supplier = conn.execute(
+        "SELECT supplier_id FROM suppliers ORDER BY lead_time_days, supplier_id LIMIT 1"
+    ).fetchone()
+    if supplier is None:
+        return
+    result = apply_create_restock_request(
+        conn, user_id, item_id, warehouse_id, supplier["supplier_id"],
+        REORDER_TARGET - row["stock"], None,
+        note=f"Stock fell to {row['stock']} units.", created_at=created_at,
+    )
+    conn.execute("INSERT INTO automatic_restocks VALUES (?)", (result["restock_id"],))
 
 
 def get_restock_requests(limit: int = 50):
@@ -1688,6 +1829,7 @@ def get_restock_requests(limit: int = 50):
                 restock_requests.status,
                 restock_requests.note,
                 users.username AS requested_by,
+                automatic_restocks.restock_id IS NOT NULL AS automatic,
                 restock_requests.created_at,
                 restock_requests.updated_at,
                 restock_requests.received_at
@@ -1698,6 +1840,7 @@ def get_restock_requests(limit: int = 50):
                 ON warehouses.warehouse_id = restock_requests.warehouse_id
             JOIN suppliers
                 ON suppliers.supplier_id = restock_requests.supplier_id
+            LEFT JOIN automatic_restocks ON automatic_restocks.restock_id = restock_requests.id
             LEFT JOIN users
                 ON users.id = restock_requests.requested_by
             ORDER BY restock_requests.id DESC

@@ -17,6 +17,7 @@ service RaftService {
     rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
     rpc GetStatus(StatusRequest) returns (StatusResponse);
     rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+    rpc SubmitCommand(SubmitCommandRequest) returns (SubmitCommandResponse);
     rpc TransferStock(TransferRequest) returns (TransferResponse);
     rpc SubmitOrder(SubmitOrderRequest) returns (SubmitOrderResponse);
 }
@@ -43,6 +44,8 @@ message StatusResponse {
     string app_address = 5;
     optional int64 commit_index = 6;
     optional int64 last_applied = 7;
+    optional int64 last_log_index = 8;
+    optional int32 voted_for = 9;
 }
 
 message RaftLogEntry {
@@ -91,6 +94,23 @@ message SubmitOrderRequest {
     int32 quantity = 3;
     string idempotency_key = 4;
     string warehouse_id = 5;
+}
+
+message SubmitCommandRequest {
+    int32 user_id = 1;
+    string command_type = 2;
+    string command_json = 3;
+    string idempotency_key = 4;
+}
+
+message SubmitCommandResponse {
+    bool success = 1;
+    string status = 2;
+    string message = 3;
+    int64 log_index = 4;
+    int64 term = 5;
+    bool committed = 6;
+    bool stock_changed = 7;
 }
 
 message SubmitOrderResponse {

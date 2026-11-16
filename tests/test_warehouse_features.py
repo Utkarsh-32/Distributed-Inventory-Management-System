@@ -191,9 +191,25 @@ class OrderAllocationTests(WarehouseTestCase):
         self.assertTrue(result["success"], result)
         self.assertEqual(
             [part["quantity"] for part in result["allocations"]],
-            [25, 15, 5],
+            [23, 13, 9],
         )
         self.assertEqual(self.total_stock("item_101"), 5)
+        self.assert_totals_consistent()
+
+    def test_balanced_order_of_thirty_from_forty(self):
+        conn = database.get_connection()
+        with conn:
+            for warehouse, units in [("wh_blr", 25), ("wh_mum", 10), ("wh_del", 5)]:
+                conn.execute("UPDATE warehouse_stock SET stock=? WHERE item_id=? AND warehouse_id=?",
+                             (units, "item_101", warehouse))
+            conn.execute("UPDATE products SET stock=40 WHERE item_id='item_101'")
+        conn.close()
+        self.assertFalse(self.order("item_101", 41)["success"])
+        self.assertFalse(self.order("item_101", 30, "wh_blr")["success"])
+        result = self.order("item_101", 30, key="balanced")
+        self.assertEqual([part["quantity"] for part in result["allocations"]], [19, 7, 4])
+        self.assertTrue(self.order("item_101", 30, key="balanced")["duplicate"])
+        self.assertEqual(self.total_stock("item_101"), 10)
         self.assert_totals_consistent()
 
     def test_cannot_oversell_total_stock(self):
@@ -360,9 +376,9 @@ class DeliveryTests(WarehouseTestCase):
     def test_cancel_returns_stock_to_original_warehouses(self):
         before_blr = self.warehouse_stock("wh_blr", "item_101")
         before_mum = self.warehouse_stock("wh_mum", "item_101")
-        order_id = self.order("item_101", 30)["order_id"]  # 25 BLR + 5 MUM
+        order_id = self.order("item_101", 30)["order_id"]  # 15 BLR + 9 MUM + 6 DEL
 
-        self.assertEqual(self.warehouse_stock("wh_blr", "item_101"), 0)
+        self.assertEqual(self.warehouse_stock("wh_blr", "item_101"), 10)
 
         result = self.move(order_id, "CANCELLED")
 

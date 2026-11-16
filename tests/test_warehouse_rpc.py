@@ -12,6 +12,7 @@ Run with:
 import json
 import sys
 import tempfile
+from types import SimpleNamespace
 import threading
 import types
 import unittest
@@ -36,6 +37,7 @@ import app_server  # noqa: E402
 import database  # noqa: E402
 import inventory_pb2  # noqa: E402
 import seed_db  # noqa: E402
+from raft_server import RaftServicer
 
 
 class WarehouseRpcTests(unittest.TestCase):
@@ -55,6 +57,16 @@ class WarehouseRpcTests(unittest.TestCase):
         self.service.dashboard_lock = threading.Lock()
         self.service.dashboard_cache = {"cached": True}
         self.service.dashboard_cache_created_at = 1.0
+
+        # Exercise the real Raft handlers against the temporary database.
+        node = SimpleNamespace(current_term=1, voted_for=1, role="leader",
+                               lock=threading.RLock(), save_state=lambda: None)
+        raft = RaftServicer(node, "local-test")
+        node.replicate_logs = lambda: raft.log_store.advance_commit_index(cluster_size=1)
+        self.service.raft_stub = SimpleNamespace(
+            SubmitOrder=lambda request, timeout: raft.SubmitOrder(request, None),
+            SubmitCommand=lambda request, timeout: raft.SubmitCommand(request, None),
+        )
 
         self.token = database.authenticate_user("alice", "password")
         self.key_counter = 0

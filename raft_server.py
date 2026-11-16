@@ -193,6 +193,52 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
                 reason=result.get("reason", "")
             )
 
+    def SubmitCommand(self, request, context):
+        reply = raft_pb2.SubmitCommandResponse
+        kind = request.command_type
+        key = request.idempotency_key.strip()
+        if not key or request.user_id <= 0 or kind not in ("CREATE_RESTOCK", "UPDATE_RESTOCK", "CHECKOUT_SHORTAGE"):
+            return reply(status="INVALID_REQUEST", message="Invalid restock request.")
+        try:
+            data = json.loads(request.command_json)
+            if not isinstance(data, dict):
+                raise ValueError()
+            args = dict(user_id=request.user_id, note=str(data.get("note", "")))
+            if kind == "CHECKOUT_SHORTAGE":
+                args = dict(user_id=request.user_id, item_id=str(data["item_id"]),
+                            quantity=int(data["quantity"]), confirmed_shortage=int(data["confirmed_shortage"]))
+            elif kind == "CREATE_RESTOCK":
+                args.update(item_id=str(data["item_id"]), warehouse_id=str(data["warehouse_id"]),
+                            supplier_id=str(data["supplier_id"]), quantity=int(data["quantity"]),
+                            idempotency_key=key)
+            else:
+                args.update(restock_id=int(data["restock_id"]), new_status=str(data["status"]))
+        except (TypeError, KeyError, ValueError):
+            return reply(status="INVALID_REQUEST", message="Invalid restock details.")
+        with self.node.lock:
+            if self.node.role != "leader":
+                return reply(status="NOT_LEADER", message="Leadership changed. Retry the request.")
+            term = self.node.current_term
+        request_id = f"{kind}:{request.user_id}:{key}"
+        try:
+            entry = self.log_store.append_local_entry(term, kind, args, request_id)
+        except RequestIdConflict:
+            return reply(status="KEY_CONFLICT", message="This request key has already been used.")
+        self.node.replicate_logs()
+        if self.log_store.get_state()["commit_index"] < entry["index"]:
+            return reply(status="NO_QUORUM", message="Waiting for a majority. Retry the request.")
+        self.log_store.apply_committed_entries()
+        conn = database.get_connection()
+        try:
+            result = json.loads(conn.execute(
+                "SELECT result_json FROM restock_command_results WHERE request_id=?", (request_id,)
+            ).fetchone()[0])
+        finally:
+            conn.close()
+        return reply(success=result["success"], status=result["status"], message=result["message"],
+                     stock_changed=result.get("stock_changed", False), committed=True,
+                     log_index=entry["index"], term=term)
+
     def TransferStock(self, request, context):
         reply = raft_pb2.TransferResponse
         source = request.source.strip()
@@ -295,7 +341,7 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
         try:
             entry = self.log_store.append_local_entry(
                 term=current_term,
-                command_type="PLACE_ORDER",
+                command_type="PLACE_ORDER_BALANCED",
                 command=command,
                 request_id=request_id
             )
@@ -352,6 +398,12 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
                 (user_id, request_id)
             ).fetchone()
 
+            allocations = [] if order is None else conn.execute(
+                "SELECT w.name, a.quantity FROM order_allocations a JOIN warehouses w "
+                "ON w.warehouse_id=a.warehouse_id WHERE a.order_id=? ORDER BY w.warehouse_id",
+                (order["id"],)
+            ).fetchall()
+
         finally:
             conn.close()
 
@@ -366,11 +418,16 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
             )
 
         order_status = order["status"]
+        message = f"Order #{order['id']}: {order_status}"
+        if allocations:
+            message += ". Fulfilled from " + ", ".join(
+                f"{row['name']} ({row['quantity']})" for row in allocations
+            )
 
         return response(
             order_status == "SUCCESS",
             order_status,
-            f"Order #{order['id']}: {order_status}",
+            message,
             order_id=order["id"],
             log_index=entry["index"],
             term=current_term,
@@ -382,6 +439,7 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
         with self.node.lock:
             state = self.log_store.get_state()
             response = raft_pb2.StatusResponse(
+                last_log_index=self.log_store.get_last_log_info()["last_log_index"],
                 commit_index=state["commit_index"],
                 last_applied=state["last_applied"],
                 node_id=self.node.node_id,
@@ -389,6 +447,8 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
                 term=self.node.current_term,
                 app_address=self.app_address
             )
+            if self.node.voted_for is not None:
+                response.voted_for = self.node.voted_for
             if self.node.leader_id is not None:
                 response.leader_id = self.node.leader_id
             return response

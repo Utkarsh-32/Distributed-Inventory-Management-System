@@ -15,12 +15,12 @@
 
     <link
         rel="stylesheet"
-        href="/static/style.css"
+        href="/static/style.css?v=shortage-dialog-1"
     >
 
 </head>
 
-<body>
+<body class="inventory-workspace">
 
 <nav class="navbar">
 
@@ -45,18 +45,15 @@
 
 <div class="container">
 
-    <div class="page-heading">
-
-        <h1>
-            Inventory Dashboard
-        </h1>
-
-        <p>
-            Welcome, {{ username }}
-        </p>
-
-    </div>
-
+    <header class="workspace-heading">
+        <h1>Inventory dashboard</h1>
+        <nav aria-label="Dashboard sections">
+            <a href="#inventory">Inventory</a>
+            {% if warehouses|length >= 2 %}<a href="#transfers">Transfers</a>{% endif %}
+            {% if warehouses and suppliers %}<a href="#restocks">Replenishment</a>{% endif %}
+            <a href="#cluster">Cluster</a>
+        </nav>
+    </header>
 
     {% if message %}
 
@@ -73,21 +70,9 @@
     <!-- WAREHOUSES -->
     <!-- ============================================ -->
 
-    <section class="card" aria-labelledby="cluster-title">
-        <h2 id="cluster-title">Live cluster</h2>
-        <p id="cluster-summary" role="status">Checking nodes…</p>
-        <div style="overflow-x:auto">
-            <table>
-                <thead><tr><th>Node</th><th>Role</th><th>Term</th><th>Known leader</th><th>Committed index</th><th>Applied index</th></tr></thead>
-                <tbody id="cluster-nodes"></tbody>
-            </table>
-        </div>
-        <p class="section-help">Committed is the latest log entry agreed on. Applied is the latest entry processed by this node.</p>
-    </section>
-    <script defer src="/static/cluster.js"></script>
-
     {% if warehouses %}
 
+    {% set network_units = warehouses|sum(attribute='total_units') %}
     <div class="warehouse-grid">
 
         {% for warehouse in warehouses %}
@@ -118,6 +103,11 @@
 
             </div>
 
+            {% set share = (100 * warehouse.total_units / network_units)|round(1) if network_units else 0 %}
+            <div class="stock-share">
+                <div class="share-track" aria-hidden="true"><span style="width: {{ share }}%"></span></div>
+                <span>{{ share }}% of network stock</span>
+            </div>
         </div>
 
         {% endfor %}
@@ -141,10 +131,22 @@
         <p class="section-help">
             Stock per warehouse. Red values are at or below
             {{ low_stock_threshold }} units. Leave the warehouse on
-            <strong>Auto</strong> to ship from the warehouses with the most stock.
+            <strong>Auto</strong> for a single shipment when possible. Larger orders split across warehouses in proportion to available stock.
         </p>
         {% endif %}
 
+        {% if inventory %}
+        <div class="inventory-tools" data-threshold="{{ low_stock_threshold }}" hidden>
+            <label>Find product <input id="product-search" type="search" placeholder="Name or item ID"></label>
+            <label>Stock view <select id="stock-view">
+                <option value="">All products</option>
+                {% for warehouse in warehouses %}
+                <option value="{{ warehouse.warehouse_id }}">Low stock · {{ warehouse.name }}</option>
+                {% endfor %}
+            </select></label>
+            <output id="product-count" aria-live="polite"></output>
+        </div>
+        {% endif %}
         <table>
 
             <thead>
@@ -177,7 +179,7 @@
 
             {% for item in inventory %}
 
-                <tr>
+                <tr data-product="{{ item.name }} {{ item.item_id }}" data-stock="{{ (item.by_warehouse or {})|tojson|forceescape }}">
 
                     <td>
                         {{ item.name }}
@@ -213,7 +215,7 @@
                         <form
                             method="post"
                             action="/order"
-                            class="order-form"
+                            class="order-form" data-name="{{ item.name }}"
                         >
 
                             <input
@@ -264,6 +266,8 @@
             </tbody>
 
         </table>
+        <p id="inventory-empty" hidden>No products match these filters.</p>
+        <script defer src="/static/inventory-filter.js"></script>
 
     </div>
 
@@ -344,16 +348,12 @@
 
     <div class="card" id="restocks">
 
-        <h2>
-            Supplier Restock Requests
-        </h2>
-
-        <p class="section-help">
-            Ask a supplier to deliver stock to a warehouse. Stock is added
-            to the warehouse only when the shipment is marked
-            <strong>Received</strong>.
-        </p>
-
+        <h2>Supplier restock requests</h2>
+        <p class="reorder-policy">At {{ low_stock_threshold }} units or fewer, a sale or outgoing transfer
+            opens a request to bring that warehouse back to {{ reorder_target }} units.
+            Receiving the shipment updates stock.</p>
+        <details class="manual-restock">
+            <summary>New manual request</summary>
         <form method="post" action="/restock" class="restock-form">
 
             <input
@@ -410,6 +410,7 @@
             </button>
 
         </form>
+        </details>
 
         {% if restock_requests %}
 
@@ -453,7 +454,9 @@
                         <span class="badge badge-{{ restock.status | lower }}">
                             {{ restock.status | replace("_", " ") | title }}
                         </span>
-                        {% if restock.requested_by %}
+                        {% if restock.automatic %}
+                        <div class="request-origin">Automatic reorder</div>
+                        {% elif restock.requested_by %}
                         <div class="muted">by {{ restock.requested_by }}</div>
                         {% endif %}
                     </td>
@@ -498,7 +501,7 @@
         {% else %}
 
             <p class="empty">
-                No restock requests yet.
+                No restock requests yet. Low-stock requests will appear here.
             </p>
 
         {% endif %}
@@ -511,6 +514,36 @@
     <!-- ============================================ -->
     <!-- DELIVERY TRACKING -->
     <!-- ============================================ -->
+
+    <div class="card cluster-card" id="cluster">
+
+        <div class="cluster-header">
+            <h2>Raft Cluster</h2>
+            <div class="cluster-summary">
+                <span class="cluster-pill" id="cluster-health">connecting…</span>
+                <span class="muted" id="cluster-meta"></span>
+            </div>
+        </div>
+
+        <p class="section-help">
+            Node status and replication progress update every two seconds.
+        </p>
+
+        <div class="cluster-nodes" id="cluster-nodes">
+            <!-- filled by JavaScript -->
+        </div>
+
+        <details class="cluster-events" open>
+            <summary>Recent events</summary>
+            <ul id="cluster-events">
+                <li class="muted">Waiting for the first status update…</li>
+            </ul>
+        </details>
+
+    </div>
+
+
+    <script defer src="/static/cluster.js"></script>
 
     <div class="card" id="deliveries">
 
@@ -1425,8 +1458,34 @@ function escapeHtml(value) {
 </script>
     
 
+<dialog id="shortage-dialog" aria-labelledby="shortage-title" aria-describedby="shortage-policy">
+    <form method="post" action="/order/shortage">
+        <h2 id="shortage-title">Request more stock?</h2>
+        <p class="shortage-product"></p>
+        <dl class="shortage-amounts">
+            <div><dt>Requested</dt><dd data-value="quantity"></dd></div>
+            <div><dt>Available</dt><dd data-value="available"></dd></div>
+            <div><dt>Shortfall</dt><dd data-value="confirmed_shortage"></dd></div>
+        </dl>
+        <p id="shortage-policy">Incoming stock counts toward the shortfall. Place your order after the shipment arrives. Available units remain open for sale.</p>
+        <input type="hidden" name="item_id">
+        <input type="hidden" name="quantity">
+        <input type="hidden" name="confirmed_shortage">
+        <input type="hidden" name="idempotency_key">
+        <div class="shortage-actions">
+            <button type="button" class="secondary" autofocus>Cancel</button>
+            <button type="submit">Request restock</button>
+        </div>
+    </form>
+</dialog>
+
 <script>
 document.addEventListener("DOMContentLoaded", function () {
+    const dialog = document.getElementById("shortage-dialog");
+    const restock = dialog.querySelector("form");
+    dialog.querySelector("[type=button]").addEventListener("click", () => dialog.close());
+    restock.addEventListener("submit", () => dialog.close());
+
     for (const form of document.querySelectorAll(".order-form")) {
         const quantity = form.elements.quantity;
         const warehouse = form.elements.warehouse_id;
@@ -1434,13 +1493,29 @@ document.addEventListener("DOMContentLoaded", function () {
             const selectedStock = warehouse?.selectedOptions[0]?.dataset.stock;
             const available = Math.min(Number(quantity.dataset.total),
                                        Number(selectedStock ?? quantity.dataset.total));
-            quantity.max = String(available);
-            quantity.setCustomValidity(quantity.valueAsNumber > available
+            if (warehouse?.value) quantity.max = String(available);
+            else quantity.max = "2147483647";
+            quantity.setCustomValidity(warehouse?.value && quantity.valueAsNumber > available
                 ? `Only ${available} units are available for this selection. Enter a smaller quantity.`
                 : "");
         }
         quantity.addEventListener("input", checkStock);
         warehouse?.addEventListener("change", checkStock);
+        form.addEventListener("submit", event => {
+            const total = Number(quantity.dataset.total);
+            const missing = quantity.valueAsNumber - total;
+            if (warehouse?.value || missing <= 0) return;
+            event.preventDefault();
+            for (const name of ["quantity", "item_id", "idempotency_key"]) {
+                restock.elements[name].value = form.elements[name].value;
+            }
+            restock.elements.confirmed_shortage.value = missing;
+            dialog.querySelector(".shortage-product").textContent = form.dataset.name;
+            dialog.querySelector('[data-value="quantity"]').textContent = quantity.value;
+            dialog.querySelector('[data-value="available"]').textContent = total;
+            dialog.querySelector('[data-value="confirmed_shortage"]').textContent = missing;
+            dialog.showModal();
+        });
         checkStock();
     }
 

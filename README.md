@@ -23,7 +23,7 @@ A Python inventory application with a FastAPI dashboard, gRPC services, SQLite s
 | Operation | Current behavior |
 | --- | --- |
 | Product orders | The application submits orders through Raft. Applying an order checks total product stock, updates that total, and records the order. |
-| Warehouse selection and allocation | The dashboard accepts a warehouse selection. The current Raft order message omits the warehouse ID, and its apply routine updates aggregate stock only. Per-warehouse balances and allocation history can therefore disagree with aggregate stock after a replicated order. |
+| Warehouse selection and allocation | A selected warehouse must cover the full order. Auto uses one warehouse when possible and otherwise splits the order in proportion to stock, recording each allocation through Raft. |
 | Supplier restocking | Local database workflows support requesting, approving, shipping, and receiving a restock. Receipt adds stock to the warehouse. These writes still need to be carried through the replicated log. |
 | Delivery tracking | The local workflow supports packing, shipping, delivery, and cancellation before shipping. Its changes and allocation-based cancellations still need integration with replicated orders. |
 | Login and reads | Sessions and inventory reads use the selected node’s local database. A user may need to sign in again after failover. Discovery helps route requests. Strongly consistent reads still require a server-side check that the leader has majority support and has applied the required entries. |

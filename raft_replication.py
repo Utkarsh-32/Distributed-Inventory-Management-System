@@ -1,6 +1,10 @@
 import json
 import database
 
+class RequestIdConflict(ValueError):
+    pass
+
+
 class RaftLogStore:
     """
     Handles persistent Raft log storage and metadata.
@@ -236,11 +240,15 @@ class RaftLogStore:
 
                 if existing is not None:
 
+                    # A retry after an upgrade must return the original allocation.
+                    same_operation = existing["command_type"] == command_type or (
+                        existing["command_type"] == "PLACE_ORDER" and command_type == "PLACE_ORDER_BALANCED"
+                    )
                     if (
-                        existing["command_type"] != command_type
+                        not same_operation
                         or existing["command_json"] != command_json
                     ):
-                        raise ValueError(
+                        raise RequestIdConflict(
                             "Request ID already exists "
                             "with a different command."
                         )
@@ -868,147 +876,23 @@ class RaftLogStore:
 
                 entry = self._entry_from_row(row)
 
-                if entry["command_type"] != "PLACE_ORDER":
-                    raise ValueError(
-                        "Unsupported command: "
-                        + entry["command_type"]
-                    )
-
-                command = entry["command"]
-
-                user_id = command.get("user_id")
-                item_id = command.get("item_id")
-                quantity = command.get("quantity")
                 request_id = entry["request_id"]
-                idempotency_key = command.get("idempotency_key")
-
-                if idempotency_key is None:
-                    idempotency_key = request_id
-
-                if not isinstance(idempotency_key, str) or not idempotency_key.strip():
-                    raise ValueError("Invalid idempotency key.")
-
-                idempotency_key = idempotency_key.strip()
-
-                if type(user_id) is not int or user_id <= 0:
-                    raise ValueError("Invalid user ID.")
-
-                if not isinstance(item_id, str) or not item_id:
-                    raise ValueError("Invalid product ID.")
-
-                if type(quantity) is not int or quantity <= 0:
-                    raise ValueError("Invalid order quantity.")
-
-                if not request_id:
-                    raise ValueError("Missing request ID.")
-
-                existing = conn.execute(
-                    """
-                    SELECT id, user_id, item_id, quantity, status
-                    FROM orders
-                    WHERE user_id = ?
-                    AND idempotency_key = ?
-                    """,
-                    (user_id, request_id)
-                ).fetchone()
-
-                if existing is not None:
-
-                    if (
-                        existing["user_id"] != user_id
-                        or existing["item_id"] != item_id
-                        or existing["quantity"] != quantity
-                    ):
-                        raise RuntimeError(
-                            "Request ID conflicts with an existing order."
-                        )
-
-                    result_status = existing["status"]
-
+                if entry["command_type"] == "TRANSFER_STOCK":
+                    result_status = self._apply_transfer(conn, entry)
+                elif entry["command_type"] in ("CREATE_RESTOCK", "UPDATE_RESTOCK", "CHECKOUT_SHORTAGE"):
+                    apply = {
+                        "CREATE_RESTOCK": database.apply_create_restock_request,
+                        "UPDATE_RESTOCK": database.apply_update_restock_status,
+                        "CHECKOUT_SHORTAGE": database.apply_checkout_shortage,
+                    }[entry["command_type"]]
+                    result = apply(conn, **entry["command"], created_at=entry["created_at"])
+                    conn.execute("INSERT INTO restock_command_results VALUES (?,?)",
+                                 (request_id, json.dumps(result)))
+                    result_status = result["status"]
+                elif entry["command_type"] in ("PLACE_ORDER", "PLACE_ORDER_BALANCED"):
+                    result_status = self._apply_order(conn, entry)
                 else:
-
-                    product = conn.execute(
-                        """
-                        SELECT name, stock
-                        FROM products
-                        WHERE item_id = ?
-                        """,
-                        (item_id,)
-                    ).fetchone()
-
-                    if product is None:
-                        raise RuntimeError(
-                            f"Product {item_id} is missing on this node."
-                        )
-
-                    current_stock = product["stock"]
-
-                    allocation = {"success": False, "status": "FAILED_INSUFFICIENT_STOCK"}
-                    if current_stock >= quantity:
-                        allocation = database._allocate_order_stock(
-                            conn, item_id, quantity, command.get("warehouse_id")
-                        )
-
-                    if allocation["success"]:
-                        for warehouse_id, units, _ in allocation["parts"]:
-                            conn.execute(
-                                "UPDATE warehouse_stock SET stock = stock - ? "
-                                "WHERE warehouse_id = ? AND item_id = ?",
-                                (units, warehouse_id, item_id)
-                            )
-
-                        conn.execute(
-                            """
-                            UPDATE products
-                            SET stock = stock - ?
-                            WHERE item_id = ?
-                            """,
-                            (quantity, item_id)
-                        )
-
-                        database._record_sale_in_latest_history(
-                            conn,
-                            item_id,
-                            quantity
-                        )
-
-                        result_status = "SUCCESS"
-                        sales_recorded = 1
-
-                    else:
-                        result_status = allocation["status"]
-                        sales_recorded = 0
-
-                    order_cursor = conn.execute(
-                        """
-                        INSERT INTO orders (
-                            user_id,
-                            item_id,
-                            quantity,
-                            status,
-                            created_at,
-                            sales_history_recorded,
-                            idempotency_key
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            user_id,
-                            item_id,
-                            quantity,
-                            result_status,
-                            entry["created_at"] or database.utc_now(),
-                            sales_recorded,
-                            request_id
-                        )
-                    )
-
-                    if allocation["success"]:
-                        conn.executemany(
-                            "INSERT INTO order_allocations (order_id, warehouse_id, quantity) "
-                            "VALUES (?, ?, ?)",
-                            [(order_cursor.lastrowid, wh, units) for wh, units, _ in allocation["parts"]]
-                        )
+                    raise ValueError("Unsupported command: " + entry["command_type"])
 
                 conn.execute(
                     """
@@ -1035,6 +919,190 @@ class RaftLogStore:
                 conn.close()
 
         return applied_entries
+
+    @staticmethod
+    def _apply_transfer(conn, entry):
+        command = entry["command"]
+        item = command["item_id"]
+        source = command["source"]
+        destination = command["destination"]
+        quantity = command["quantity"]
+        if source == destination or type(quantity) is not int or quantity <= 0:
+            raise ValueError("Invalid committed transfer.")
+        if not conn.execute("SELECT 1 FROM products WHERE item_id=?", (item,)).fetchone():
+            status = "ITEM_NOT_FOUND"
+        elif conn.execute(
+            "SELECT COUNT(*) FROM warehouses WHERE warehouse_id IN (?, ?)",
+            (source, destination)
+        ).fetchone()[0] != 2:
+            status = "WAREHOUSE_NOT_FOUND"
+        else:
+            debit = conn.execute(
+                "UPDATE warehouse_stock SET stock=stock-? "
+                "WHERE item_id=? AND warehouse_id=? AND stock>=?",
+                (quantity, item, source, quantity)
+            )
+            if debit.rowcount == 1:
+                conn.execute(
+                    "INSERT INTO warehouse_stock (warehouse_id,item_id,stock) VALUES (?,?,?) "
+                    "ON CONFLICT(warehouse_id,item_id) DO UPDATE SET stock=stock+excluded.stock",
+                    (destination, item, quantity)
+                )
+                # Transfer request IDs contain the authenticated user's ID.
+                prefix, separator, remainder = entry["request_id"].partition(":")
+                if prefix == "transfer" and separator:
+                    actor = int(remainder.split(":", 1)[0])
+                    database.request_low_stock_reorder(conn, item, source, actor, entry["created_at"])
+                status = "SUCCESS"
+            else:
+                status = "FAILED_INSUFFICIENT_STOCK"
+        conn.execute(
+            "INSERT INTO warehouse_transfers (request_id,item_id,source,destination,quantity,status) "
+            "VALUES (?,?,?,?,?,?)",
+            (entry["request_id"], item, source, destination, quantity, status)
+        )
+        return status
+
+    @staticmethod
+    def _apply_order(conn, entry):
+        command = entry["command"]
+
+        user_id = command.get("user_id")
+        item_id = command.get("item_id")
+        quantity = command.get("quantity")
+        request_id = entry["request_id"]
+        idempotency_key = command.get("idempotency_key")
+
+        if idempotency_key is None:
+            idempotency_key = request_id
+
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            raise ValueError("Invalid idempotency key.")
+
+        idempotency_key = idempotency_key.strip()
+
+        if type(user_id) is not int or user_id <= 0:
+            raise ValueError("Invalid user ID.")
+
+        if not isinstance(item_id, str) or not item_id:
+            raise ValueError("Invalid product ID.")
+
+        if type(quantity) is not int or quantity <= 0:
+            raise ValueError("Invalid order quantity.")
+
+        if not request_id:
+            raise ValueError("Missing request ID.")
+
+        existing = conn.execute(
+            """
+            SELECT id, user_id, item_id, quantity, status
+            FROM orders
+            WHERE user_id = ?
+            AND idempotency_key = ?
+            """,
+            (user_id, request_id)
+        ).fetchone()
+
+        if existing is not None:
+
+            if (
+                existing["user_id"] != user_id
+                or existing["item_id"] != item_id
+                or existing["quantity"] != quantity
+            ):
+                raise RuntimeError(
+                    "Request ID conflicts with an existing order."
+                )
+
+            result_status = existing["status"]
+
+        else:
+
+            product = conn.execute(
+                """
+                SELECT name, stock
+                FROM products
+                WHERE item_id = ?
+                """,
+                (item_id,)
+            ).fetchone()
+
+            if product is None:
+                raise RuntimeError(
+                    f"Product {item_id} is missing on this node."
+                )
+
+            current_stock = product["stock"]
+
+            allocation = {"success": False, "status": "FAILED_INSUFFICIENT_STOCK"}
+            if current_stock >= quantity:
+                allocation = database._allocate_order_stock(
+                    conn, item_id, quantity, command.get("warehouse_id"),
+                    balanced=entry["command_type"] == "PLACE_ORDER_BALANCED",
+                )
+
+            if allocation["success"]:
+                for warehouse_id, units, _ in allocation["parts"]:
+                    conn.execute(
+                        "UPDATE warehouse_stock SET stock = stock - ? "
+                        "WHERE warehouse_id = ? AND item_id = ?",
+                        (units, warehouse_id, item_id)
+                    )
+                    database.request_low_stock_reorder(conn, item_id, warehouse_id, user_id, entry["created_at"])
+
+                conn.execute(
+                    """
+                    UPDATE products
+                    SET stock = stock - ?
+                    WHERE item_id = ?
+                    """,
+                    (quantity, item_id)
+                )
+
+                database._record_sale_in_latest_history(
+                    conn,
+                    item_id,
+                    quantity
+                )
+
+                result_status = "SUCCESS"
+                sales_recorded = 1
+
+            else:
+                result_status = allocation["status"]
+                sales_recorded = 0
+
+            order_cursor = conn.execute(
+                """
+                INSERT INTO orders (
+                    user_id,
+                    item_id,
+                    quantity,
+                    status,
+                    created_at,
+                    sales_history_recorded,
+                    idempotency_key
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    item_id,
+                    quantity,
+                    result_status,
+                    entry["created_at"] or database.utc_now(),
+                    sales_recorded,
+                    request_id
+                )
+            )
+
+            if allocation["success"]:
+                conn.executemany(
+                    "INSERT INTO order_allocations (order_id, warehouse_id, quantity) "
+                    "VALUES (?, ?, ?)",
+                    [(order_cursor.lastrowid, wh, units) for wh, units, _ in allocation["parts"]]
+                )
+        return result_status
 
     def recover_pending_entries(self):
 

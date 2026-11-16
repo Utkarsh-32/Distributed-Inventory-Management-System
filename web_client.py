@@ -15,6 +15,7 @@ import inventory_pb2
 import inventory_pb2_grpc
 
 from concurrent.futures import ThreadPoolExecutor
+from cluster_monitor import ClusterMonitor
 from leader_discovery import find_leader, read_status
 
 
@@ -34,6 +35,8 @@ RAFT_ADDRESSES = [
     ).split(",")
     if address.strip()
 ]
+
+cluster_monitor = ClusterMonitor(RAFT_ADDRESSES)
 
 WEB_HOST = os.getenv("WEB_HOST", "127.0.0.1")
 WEB_PORT = int(os.getenv("WEB_PORT", "8000"))
@@ -81,6 +84,13 @@ def cluster_node_status(address):
             for field in ("leader_id", "commit_index", "last_applied")
         },
     }
+
+
+@app.get("/api/cluster")
+def live_cluster(request: Request):
+    if not get_session_token(request):
+        return JSONResponse({"message": "Please log in again."}, status_code=401)
+    return JSONResponse(cluster_monitor.snapshot(), headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/cluster/status")
@@ -597,6 +607,7 @@ def dashboard(
             "restock_requests": restock_requests,
             "deliveries": deliveries,
             "low_stock_threshold": low_stock_threshold,
+            "reorder_target": warehouse_data.get("reorder_target", 2 * low_stock_threshold),
 
             "forecasts": [],
             "reorder_recommendations": [],
@@ -742,6 +753,14 @@ def transfer_stock(request: Request, item_id: str = Form(...), source: str = For
         request, "transfer", dict(item_id=item_id, source=source, destination=destination,
                                   quantity=quantity), idempotency_key, section="dashboard-message"
     )
+
+
+@app.post("/order/shortage")
+def checkout_shortage(request: Request, item_id: str = Form(...), quantity: int = Form(...),
+                      confirmed_shortage: int = Form(...), idempotency_key: str = Form(...)):
+    return post_and_redirect(request, "checkout_shortage", {
+        "item_id": item_id, "quantity": quantity, "confirmed_shortage": confirmed_shortage,
+    }, idempotency_key, section="dashboard-message")
 
 
 @app.post("/order")
