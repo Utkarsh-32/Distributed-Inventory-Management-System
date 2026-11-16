@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 import inventory_pb2
 import inventory_pb2_grpc
 
+from cluster_monitor import ClusterMonitor
 from leader_discovery import find_leader
 
 
@@ -33,6 +34,8 @@ RAFT_ADDRESSES = [
     ).split(",")
     if address.strip()
 ]
+
+cluster_monitor = ClusterMonitor(RAFT_ADDRESSES)
 
 WEB_HOST = os.getenv("WEB_HOST", "127.0.0.1")
 WEB_PORT = int(os.getenv("WEB_PORT", "8000"))
@@ -816,6 +819,23 @@ def root(
         "/login",
         status_code=303,
     )
+
+@app.get("/api/cluster")
+def cluster_status(request: Request):
+    """
+    Live Raft cluster status for the dashboard's cluster panel.
+
+    Polled by the browser every couple of seconds.  Requires a session so
+    the cluster's internals are only shown to signed-in users.
+    """
+    if not get_session_token(request):
+        return JSONResponse(
+            {"status": "UNAUTHORIZED", "message": "Please log in again."},
+            status_code=401,
+        )
+
+    return JSONResponse(cluster_monitor.snapshot())
+
 
 @app.get("/api/ai-analytics")
 def ai_analytics(request: Request):

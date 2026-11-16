@@ -368,12 +368,27 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
         }
 
     def GetStatus(self, request, context):
+        # Read replication progress outside the node lock: it touches
+        # SQLite and must not delay heartbeats.
+        try:
+            state = self.log_store.get_state()
+            last_log_index = self.log_store.get_last_log_info()["last_log_index"]
+
+        except Exception as exc:
+            print(f"[STATUS] Could not read log state: {exc}", flush=True)
+            state = {"commit_index": 0, "last_applied": 0}
+            last_log_index = 0
+
         with self.node.lock:
             response = raft_pb2.StatusResponse(
                 node_id=self.node.node_id,
                 role=self.node.role,
                 term=self.node.current_term,
-                app_address=self.app_address
+                app_address=self.app_address,
+                last_log_index=int(last_log_index),
+                commit_index=int(state["commit_index"]),
+                last_applied=int(state["last_applied"]),
+                voted_for=int(self.node.voted_for or 0),
             )
             if self.node.leader_id is not None:
                 response.leader_id = self.node.leader_id

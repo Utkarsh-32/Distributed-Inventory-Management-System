@@ -911,3 +911,143 @@ button.secondary:hover {
         width: 100%;
     }
 }
+
+
+/* ============================= */
+/* LIVE RAFT CLUSTER VIEW */
+/* ============================= */
+
+.cluster-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.cluster-summary {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.cluster-pill {
+    display: inline-block;
+    padding: 5px 12px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 700;
+    background: #e2e8f0;
+    color: #334155;
+}
+
+.pill-ok {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.pill-warn {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.pill-bad {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.cluster-nodes {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.node-card {
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 16px 18px;
+    background: #f8fafc;
+    transition: background 0.3s, border-color 0.3s;
+}
+
+.node-leader {
+    background: #f0fdf4;
+    border-color: #86efac;
+}
+
+.node-down {
+    background: #fef2f2;
+    border-color: #fecaca;
+    opacity: 0.85;
+}
+
+.node-title {
+    font-weight: 700;
+    font-size: 16px;
+    color: #1e293b;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.crown {
+    color: #ca8a04;
+    font-size: 18px;
+}
+
+.node-note {
+    margin-top: 10px;
+    color: #991b1b;
+    font-size: 13px;
+}
+
+.node-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 14px;
+    margin: 12px 0 0;
+}
+
+.node-stats div {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+}
+
+.node-stats dt {
+    color: #64748b;
+}
+
+.node-stats dd {
+    margin: 0;
+    font-weight: 600;
+    color: #1e293b;
+}
+
+.cluster-events summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: #334155;
+}
+
+.cluster-events ul {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+    max-height: 150px;
+    overflow-y: auto;
+    font-size: 13px;
+}
+
+.cluster-events li {
+    padding: 4px 0;
+    border-bottom: 1px solid #f1f5f9;
+}
+
+.event-leader { color: #166534; }
+.event-down   { color: #991b1b; }
+.event-up     { color: #1e40af; }
+.event-term,
+.event-election { color: #92400e; }

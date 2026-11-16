@@ -17,6 +17,7 @@ A Python inventory application with a FastAPI dashboard, gRPC services, SQLite s
 | `raft_replication.py` | Durable log, follower replication, commit tracking, and application of order entries |
 | `inventory.proto`, `raft.proto` | Application, LLM, and Raft message definitions |
 | `llm_server.py` | Optional model-generated inventory insights |
+| `cluster_monitor.py` | Live cluster status and event feed for the dashboard |
 
 ## Current integration scope
 
@@ -40,6 +41,22 @@ idempotency key, so a retry is applied at most once and the resulting rows
 match across nodes. `tests/test_raft_warehouse_integration.py` drives a
 simulated three-node cluster through all four commands and checks that every
 node ends with identical stock, allocations and histories.
+
+## Live cluster view
+
+The top of the dashboard shows the Raft cluster as it runs: each node's
+role, term, who it believes is leader, its log, commit and applied indexes,
+and whether it is reachable, plus a feed of recent events (a node stopping,
+an election, a new leader, a node returning). The page polls
+`GET /api/cluster` every two seconds, so stopping a container during a demo
+shows the election and the replacement leader on the page within a few
+seconds, and the log columns show a returning node catching up.
+
+The data comes from each node's `GetStatus` RPC, which now also reports
+`last_log_index`, `commit_index`, `last_applied` and `voted_for`.
+`cluster_monitor.py` polls the nodes in parallel and applies the same
+majority-confirmation rule as `leader_discovery.py` to decide the agreed
+leader. The view only reads status; it never changes the cluster.
 
 ## Start with Docker Compose
 
@@ -131,7 +148,7 @@ Run the warehouse and replication tests against temporary databases (no
 services need to be running):
 
 ```bash
-python -m unittest tests/test_warehouse_features.py tests/test_warehouse_rpc.py tests/test_raft_warehouse_integration.py
+python -m unittest tests/test_warehouse_features.py tests/test_warehouse_rpc.py tests/test_raft_warehouse_integration.py tests/test_cluster_monitor.py
 ```
 
 The integration suite wires the real Raft servicer, log store and

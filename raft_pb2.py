@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\nraft.proto"`\n\x0bVoteRequest\x12\x14\n\x0ccandidate_id\x18\x01 \x01(\x05\x12\x0c\n\x04term\x18\x02 \x01(\x03\x12\x16\n\x0elast_log_index\x18\x03 \x01(\x03\x12\x15\n\rlast_log_term\x18\x04 \x01(\x03"2\n\x0cVoteResponse\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x14\n\x0cvote_granted\x18\x02 \x01(\x08"3\n\x10HeartbeatRequest\x12\x11\n\tleader_id\x18\x01 \x01(\x05\x12\x0c\n\x04term\x18\x02 \x01(\x03"3\n\x11HeartbeatResponse\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x10\n\x08accepted\x18\x02 \x01(\x08"\x0f\n\rStatusRequest"x\n\x0eStatusResponse\x12\x0f\n\x07node_id\x18\x01 \x01(\x05\x12\x0c\n\x04role\x18\x02 \x01(\t\x12\x0c\n\x04term\x18\x03 \x01(\x03\x12\x16\n\tleader_id\x18\x04 \x01(\x05H\x00\x88\x01\x01\x12\x13\n\x0bapp_address\x18\x05 \x01(\tB\x0c\n\n_leader_id"\x7f\n\x0cRaftLogEntry\x12\r\n\x05index\x18\x01 \x01(\x03\x12\x0c\n\x04term\x18\x02 \x01(\x03\x12\x14\n\x0ccommand_type\x18\x03 \x01(\t\x12\x14\n\x0ccommand_json\x18\x04 \x01(\t\x12\x12\n\nrequest_id\x18\x05 \x01(\t\x12\x12\n\ncreated_at\x18\x06 \x01(\t"\x9d\x01\n\x14AppendEntriesRequest\x12\x11\n\tleader_id\x18\x01 \x01(\x05\x12\x0c\n\x04term\x18\x02 \x01(\x03\x12\x16\n\x0eprev_log_index\x18\x03 \x01(\x03\x12\x15\n\rprev_log_term\x18\x04 \x01(\x03\x12\x1e\n\x07entries\x18\x05 \x03(\x0b2\r.RaftLogEntry\x12\x15\n\rleader_commit\x18\x06 \x01(\x03"s\n\x15AppendEntriesResponse\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x0f\n\x07success\x18\x02 \x01(\x08\x12\x13\n\x0bmatch_index\x18\x03 \x01(\x03\x12\x16\n\x0econflict_index\x18\x04 \x01(\x03\x12\x0e\n\x06reason\x18\x05 \x01(\t"w\n\x12SubmitOrderRequest\x12\x0f\n\x07user_id\x18\x01 \x01(\x05\x12\x0f\n\x07item_id\x18\x02 \x01(\t\x12\x10\n\x08quantity\x18\x03 \x01(\x05\x12\x17\n\x0fidempotency_key\x18\x04 \x01(\t\x12\x14\n\x0cwarehouse_id\x18\x05 \x01(\t"l\n\x14SubmitCommandRequest\x12\x0f\n\x07user_id\x18\x01 \x01(\x05\x12\x14\n\x0ccommand_type\x18\x02 \x01(\t\x12\x14\n\x0ccommand_json\x18\x03 \x01(\t\x12\x17\n\x0fidempotency_key\x18\x04 \x01(\t"\x94\x01\n\x15SubmitCommandResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x0f\n\x07message\x18\x03 \x01(\t\x12\x11\n\tlog_index\x18\x04 \x01(\x03\x12\x0c\n\x04term\x18\x05 \x01(\x03\x12\x11\n\tcommitted\x18\x06 \x01(\x08\x12\x15\n\rstock_changed\x18\x07 \x01(\x08"\x8d\x01\n\x13SubmitOrderResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x0f\n\x07message\x18\x03 \x01(\t\x12\x10\n\x08order_id\x18\x04 \x01(\x03\x12\x11\n\tlog_index\x18\x05 \x01(\x03\x12\x0c\n\x04term\x18\x06 \x01(\x03\x12\x11\n\tcommitted\x18\x07 \x01(\x082\xd5\x02\n\x0bRaftService\x12*\n\x0bRequestVote\x12\x0c.VoteRequest\x1a\r.VoteResponse\x122\n\tHeartbeat\x12\x11.HeartbeatRequest\x1a\x12.HeartbeatResponse\x12,\n\tGetStatus\x12\x0e.StatusRequest\x1a\x0f.StatusResponse\x12>\n\rAppendEntries\x12\x15.AppendEntriesRequest\x1a\x16.AppendEntriesResponse\x128\n\x0bSubmitOrder\x12\x13.SubmitOrderRequest\x1a\x14.SubmitOrderResponse\x12>\n\rSubmitCommand\x12\x15.SubmitCommandRequest\x1a\x16.SubmitCommandResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\nraft.proto"`\n\x0bVoteRequest\x12\x14\n\x0ccandidate_id\x18\x01 \x01(\x05\x12\x0c\n\x04term\x18\x02 \x01(\x03\x12\x16\n\x0elast_log_index\x18\x03 \x01(\x03\x12\x15\n\rlast_log_term\x18\x04 \x01(\x03"2\n\x0cVoteResponse\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x14\n\x0cvote_granted\x18\x02 \x01(\x08"3\n\x10HeartbeatRequest\x12\x11\n\tleader_id\x18\x01 \x01(\x05\x12\x0c\n\x04term\x18\x02 \x01(\x03"3\n\x11HeartbeatResponse\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x10\n\x08accepted\x18\x02 \x01(\x08"\x0f\n\rStatusRequest"\xcf\x01\n\x0eStatusResponse\x12\x0f\n\x07node_id\x18\x01 \x01(\x05\x12\x0c\n\x04role\x18\x02 \x01(\t\x12\x0c\n\x04term\x18\x03 \x01(\x03\x12\x16\n\tleader_id\x18\x04 \x01(\x05H\x00\x88\x01\x01\x12\x13\n\x0bapp_address\x18\x05 \x01(\t\x12\x16\n\x0elast_log_index\x18\x06 \x01(\x03\x12\x14\n\x0ccommit_index\x18\x07 \x01(\x03\x12\x14\n\x0clast_applied\x18\x08 \x01(\x03\x12\x11\n\tvoted_for\x18\t \x01(\x03B\x0c\n\n_leader_id"\x7f\n\x0cRaftLogEntry\x12\r\n\x05index\x18\x01 \x01(\x03\x12\x0c\n\x04term\x18\x02 \x01(\x03\x12\x14\n\x0ccommand_type\x18\x03 \x01(\t\x12\x14\n\x0ccommand_json\x18\x04 \x01(\t\x12\x12\n\nrequest_id\x18\x05 \x01(\t\x12\x12\n\ncreated_at\x18\x06 \x01(\t"\x9d\x01\n\x14AppendEntriesRequest\x12\x11\n\tleader_id\x18\x01 \x01(\x05\x12\x0c\n\x04term\x18\x02 \x01(\x03\x12\x16\n\x0eprev_log_index\x18\x03 \x01(\x03\x12\x15\n\rprev_log_term\x18\x04 \x01(\x03\x12\x1e\n\x07entries\x18\x05 \x03(\x0b2\r.RaftLogEntry\x12\x15\n\rleader_commit\x18\x06 \x01(\x03"s\n\x15AppendEntriesResponse\x12\x0c\n\x04term\x18\x01 \x01(\x03\x12\x0f\n\x07success\x18\x02 \x01(\x08\x12\x13\n\x0bmatch_index\x18\x03 \x01(\x03\x12\x16\n\x0econflict_index\x18\x04 \x01(\x03\x12\x0e\n\x06reason\x18\x05 \x01(\t"w\n\x12SubmitOrderRequest\x12\x0f\n\x07user_id\x18\x01 \x01(\x05\x12\x0f\n\x07item_id\x18\x02 \x01(\t\x12\x10\n\x08quantity\x18\x03 \x01(\x05\x12\x17\n\x0fidempotency_key\x18\x04 \x01(\t\x12\x14\n\x0cwarehouse_id\x18\x05 \x01(\t"l\n\x14SubmitCommandRequest\x12\x0f\n\x07user_id\x18\x01 \x01(\x05\x12\x14\n\x0ccommand_type\x18\x02 \x01(\t\x12\x14\n\x0ccommand_json\x18\x03 \x01(\t\x12\x17\n\x0fidempotency_key\x18\x04 \x01(\t"\x94\x01\n\x15SubmitCommandResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x0f\n\x07message\x18\x03 \x01(\t\x12\x11\n\tlog_index\x18\x04 \x01(\x03\x12\x0c\n\x04term\x18\x05 \x01(\x03\x12\x11\n\tcommitted\x18\x06 \x01(\x08\x12\x15\n\rstock_changed\x18\x07 \x01(\x08"\x8d\x01\n\x13SubmitOrderResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x0f\n\x07message\x18\x03 \x01(\t\x12\x10\n\x08order_id\x18\x04 \x01(\x03\x12\x11\n\tlog_index\x18\x05 \x01(\x03\x12\x0c\n\x04term\x18\x06 \x01(\x03\x12\x11\n\tcommitted\x18\x07 \x01(\x082\xd5\x02\n\x0bRaftService\x12*\n\x0bRequestVote\x12\x0c.VoteRequest\x1a\r.VoteResponse\x122\n\tHeartbeat\x12\x11.HeartbeatRequest\x1a\x12.HeartbeatResponse\x12,\n\tGetStatus\x12\x0e.StatusRequest\x1a\x0f.StatusResponse\x12>\n\rAppendEntries\x12\x15.AppendEntriesRequest\x1a\x16.AppendEntriesResponse\x128\n\x0bSubmitOrder\x12\x13.SubmitOrderRequest\x1a\x14.SubmitOrderResponse\x12>\n\rSubmitCommand\x12\x15.SubmitCommandRequest\x1a\x16.SubmitCommandResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -41,22 +41,22 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_HEARTBEATRESPONSE']._serialized_end=268
   _globals['_STATUSREQUEST']._serialized_start=270
   _globals['_STATUSREQUEST']._serialized_end=285
-  _globals['_STATUSRESPONSE']._serialized_start=287
-  _globals['_STATUSRESPONSE']._serialized_end=407
-  _globals['_RAFTLOGENTRY']._serialized_start=409
-  _globals['_RAFTLOGENTRY']._serialized_end=536
-  _globals['_APPENDENTRIESREQUEST']._serialized_start=539
-  _globals['_APPENDENTRIESREQUEST']._serialized_end=696
-  _globals['_APPENDENTRIESRESPONSE']._serialized_start=698
-  _globals['_APPENDENTRIESRESPONSE']._serialized_end=813
-  _globals['_SUBMITORDERREQUEST']._serialized_start=815
-  _globals['_SUBMITORDERREQUEST']._serialized_end=934
-  _globals['_SUBMITCOMMANDREQUEST']._serialized_start=936
-  _globals['_SUBMITCOMMANDREQUEST']._serialized_end=1044
-  _globals['_SUBMITCOMMANDRESPONSE']._serialized_start=1047
-  _globals['_SUBMITCOMMANDRESPONSE']._serialized_end=1195
-  _globals['_SUBMITORDERRESPONSE']._serialized_start=1198
-  _globals['_SUBMITORDERRESPONSE']._serialized_end=1339
-  _globals['_RAFTSERVICE']._serialized_start=1342
-  _globals['_RAFTSERVICE']._serialized_end=1683
+  _globals['_STATUSRESPONSE']._serialized_start=288
+  _globals['_STATUSRESPONSE']._serialized_end=495
+  _globals['_RAFTLOGENTRY']._serialized_start=497
+  _globals['_RAFTLOGENTRY']._serialized_end=624
+  _globals['_APPENDENTRIESREQUEST']._serialized_start=627
+  _globals['_APPENDENTRIESREQUEST']._serialized_end=784
+  _globals['_APPENDENTRIESRESPONSE']._serialized_start=786
+  _globals['_APPENDENTRIESRESPONSE']._serialized_end=901
+  _globals['_SUBMITORDERREQUEST']._serialized_start=903
+  _globals['_SUBMITORDERREQUEST']._serialized_end=1022
+  _globals['_SUBMITCOMMANDREQUEST']._serialized_start=1024
+  _globals['_SUBMITCOMMANDREQUEST']._serialized_end=1132
+  _globals['_SUBMITCOMMANDRESPONSE']._serialized_start=1135
+  _globals['_SUBMITCOMMANDRESPONSE']._serialized_end=1283
+  _globals['_SUBMITORDERRESPONSE']._serialized_start=1286
+  _globals['_SUBMITORDERRESPONSE']._serialized_end=1427
+  _globals['_RAFTSERVICE']._serialized_start=1430
+  _globals['_RAFTSERVICE']._serialized_end=1771
 # @@protoc_insertion_point(module_scope)
