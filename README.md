@@ -163,6 +163,3 @@ Dependencies are currently unpinned. Generated bindings include runtime version 
 - **Docker registry certificate names a campus domain:** resolve captive-portal/network access or use an already built compatible image with `up -d --no-build`. Do not disable certificate verification.
 - **Port occupied:** identify the owning process/container before stopping it; do not start local nodes on ports already published by Compose.
 
-## Submission notes
-
-The AOS video should cover both milestones within the assignment's 5–10 minute limit. Prioritize replicated state, retries, concurrency and failure/recovery evidence. `REFLECTION.md` contains proposed contributions that each team member must verify; documentation cannot establish who performed the work.
