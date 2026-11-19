@@ -12,7 +12,8 @@ if [[ "${1:-}" == "--fresh" ]]; then
     docker compose down --volumes --remove-orphans
 fi
 
-docker compose up -d --build
+docker compose build node1
+docker compose up -d --no-build
 
 echo
 echo "Waiting for the Raft nodes to elect a leader..."

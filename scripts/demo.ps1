@@ -1,9 +1,9 @@
 # Walk through the project for a demo:
-#   1. warehouse stock, orders, supplier restocks and delivery updates
+#   1. warehouse stock, orders, replicated supplier restocks
 #   2. leader failure: stop the leader node, show a new leader is elected
 #      and still accepts orders, then bring the old node back
 #
-# Start the cluster first with .\scripts\start.ps1 (ideally -Fresh).
+# Start the cluster first with .\scripts\start.ps1 on disposable demo data.
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
 
@@ -34,7 +34,7 @@ Write-Host "Current leader: $leader. Stopping its container (Raft + app server).
 docker compose stop $leader
 
 Write-Host "Waiting for the remaining nodes to elect a new leader..."
-Start-Sleep -Seconds 6
+Invoke-Demo @("wait", "--timeout", "60") | Write-Host
 Invoke-Demo @("order") | Write-Host
 
 Wait-ForEnter
@@ -42,5 +42,5 @@ Wait-ForEnter
 Write-Host ""
 Write-Host "Restarting $leader; it rejoins the cluster as a follower..."
 docker compose start $leader
-Start-Sleep -Seconds 6
+Invoke-Demo @("wait", "--timeout", "60") | Write-Host
 Invoke-Demo @("status") | Write-Host

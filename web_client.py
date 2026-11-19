@@ -1,3 +1,4 @@
+import atexit
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,7 @@ import inventory_pb2
 import inventory_pb2_grpc
 
 from concurrent.futures import ThreadPoolExecutor
+from partition_demo import PartitionDemo
 from cluster_monitor import ClusterMonitor
 from leader_discovery import find_leader, read_status
 
@@ -37,6 +39,8 @@ RAFT_ADDRESSES = [
 ]
 
 cluster_monitor = ClusterMonitor(RAFT_ADDRESSES)
+partition_demo = PartitionDemo()
+atexit.register(partition_demo.close)
 
 WEB_HOST = os.getenv("WEB_HOST", "127.0.0.1")
 WEB_PORT = int(os.getenv("WEB_PORT", "8000"))
@@ -84,6 +88,40 @@ def cluster_node_status(address):
             for field in ("leader_id", "commit_index", "last_applied")
         },
     }
+
+
+def demo_token(request):
+    token = get_session_token(request)
+    if not token:
+        raise HTTPException(401, "Sign in to use the demo.")
+    return token
+
+
+@app.get("/api/demo/partition")
+def partition_state(request: Request):
+    return JSONResponse(partition_demo.snapshot(demo_token(request)), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/demo/partition/{action}")
+def partition_action(action: str, request: Request):
+    token = demo_token(request)
+    if request.headers.get("X-Inventory-Demo") != "1":
+        raise HTTPException(400, "Use the dashboard demo controls.")
+    if action == "isolate":
+        try:
+            auth = get_stub().get(inventory_pb2.GetRequest(type="inventory", token=token), timeout=2)
+        except grpc.RpcError:
+            raise HTTPException(503, "Unable to verify your session. Try again.")
+        if auth.status != "SUCCESS":
+            raise HTTPException(401, "Sign in again to start a demo.")
+        if not partition_demo.start(token):
+            raise HTTPException(409, "A demo is already running.")
+    elif action == "reconnect":
+        if not partition_demo.reconnect(token):
+            raise HTTPException(409, "This demo is not waiting for reconnection.")
+    else:
+        raise HTTPException(404, "Unknown demo action.")
+    return partition_demo.snapshot(token)
 
 
 @app.get("/api/cluster")

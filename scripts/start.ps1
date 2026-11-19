@@ -22,7 +22,8 @@ if ($Fresh) {
     Invoke-Checked docker @("compose", "down", "--volumes", "--remove-orphans")
 }
 
-Invoke-Checked docker @("compose", "up", "-d", "--build")
+Invoke-Checked docker @("compose", "build", "node1")
+Invoke-Checked docker @("compose", "up", "-d", "--no-build")
 
 Write-Host ""
 Write-Host "Waiting for the Raft nodes to elect a leader..."

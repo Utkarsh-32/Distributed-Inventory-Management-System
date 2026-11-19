@@ -58,6 +58,9 @@ class RaftLogStore:
 
             stored_term = state["current_term"]
             stored_vote = state["voted_for"]
+            # SQLite stores voted_for as TEXT; RPC candidate IDs are integers.
+            if stored_vote is not None:
+                stored_vote = int(stored_vote)
 
             if current_term < stored_term:
                 raise ValueError(

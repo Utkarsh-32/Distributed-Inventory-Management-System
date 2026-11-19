@@ -1,45 +1,48 @@
+"""Deterministic in-process election check; transport is mocked, not a live failure test."""
+import os
+import tempfile
+import unittest
+from unittest.mock import patch
+import raft_pb2
 from raft_node import RaftNode
-import time
-
-node1 = RaftNode(1, "localhost:50061", ["localhost:50062","localhost:50063"])
-
-node2 = RaftNode(2, "localhost:50062", ["localhost:50061","localhost:50063"])
-
-node3 = RaftNode(3, "localhost:50063", ["localhost:50061","localhost:50062"])
-
-node1.start_election()
-
-votes = 1
-
-if (node2.request_vote(node1.node_id, node1.current_term)):
-    votes += 1
-
-if (node3.request_vote(node1.node_id, node1.current_term)):
-    votes += 1
-
-if (votes >= 2):
-    node1.role = "leader"
-    node1.leader_id = node1.node_id
-
-    node2.receive_heartbeat(node1.node_id, node1.current_term)
-
-    node3.receive_heartbeat(node1.node_id, node1.current_term)
-
-    time.sleep(6)
-
-    node2.check_election_timeout()
-
-    new_votes = 1
-
-    if (node3.request_vote(node2.node_id, node2.current_term)):
-        new_votes += 1
-
-    if new_votes >= 2:
-        node2.role = "leader"
-        node2.leader_id = node2.node_id
-        node3.receive_heartbeat(node2.node_id, node2.current_term)
-        node1.receive_heartbeat(node2.node_id, node2.current_term)
 
 
-    print(node2.role, node2.current_term)
-    print(node1.role, node1.current_term)
+class LocalElectionTests(unittest.TestCase):
+    def test_majority_election_and_higher_term_step_down(self):
+        previous = os.getcwd()
+        with tempfile.TemporaryDirectory() as directory:
+            os.chdir(directory)
+            try:
+                nodes = {str(n): RaftNode(n, str(n), [str(p) for p in (1, 2, 3) if p != n])
+                         for n in (1, 2, 3)}
+
+                def elect(candidate, unavailable=()):
+                    term = candidate.start_election()
+                    def reply(peer_address, election_term):
+                        if peer_address in unavailable:
+                            return None
+                        peer = nodes[peer_address]
+                        granted = peer.request_vote(candidate.node_id, election_term,
+                                                    candidate.last_log_term, candidate.last_log_index)
+                        return raft_pb2.VoteResponse(term=peer.current_term, vote_granted=granted)
+                    with patch.object(candidate, 'send_vote_request', side_effect=reply):
+                        candidate.collect_votes(term)
+                    return term
+
+                first_term = elect(nodes['1'])
+                self.assertEqual(nodes['1'].role, 'leader')
+                for peer in ('2', '3'):
+                    nodes[peer].receive_heartbeat(1, first_term)
+                next_term = elect(nodes['2'], unavailable=('1',))
+                self.assertGreater(next_term, first_term)
+                self.assertEqual(nodes['2'].role, 'leader')
+                nodes['1'].receive_heartbeat(2, next_term)
+                self.assertEqual((nodes['1'].role, nodes['1'].leader_id), ('follower', 2))
+                elect(nodes['3'], unavailable=('1', '2'))
+                self.assertEqual(nodes['3'].role, 'candidate')
+            finally:
+                os.chdir(previous)
+
+
+if __name__ == '__main__':
+    unittest.main()

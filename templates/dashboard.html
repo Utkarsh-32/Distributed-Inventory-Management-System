@@ -15,7 +15,7 @@
 
     <link
         rel="stylesheet"
-        href="/static/style.css?v=shortage-dialog-1"
+        href="/static/style.css?v=partition-demo-1"
     >
 
 </head>
@@ -52,6 +52,7 @@
             {% if warehouses|length >= 2 %}<a href="#transfers">Transfers</a>{% endif %}
             {% if warehouses and suppliers %}<a href="#restocks">Replenishment</a>{% endif %}
             <a href="#cluster">Cluster</a>
+            <a href="#partition-demo">Partition demo</a>
         </nav>
     </header>
 
@@ -542,6 +543,36 @@
 
     </div>
 
+
+    <section class="card" id="partition-demo" aria-labelledby="partition-heading">
+        <h2 id="partition-heading">Network partition · the last laptop</h2>
+        <p class="section-help">Three temporary nodes share one demo laptop. Isolate the leader to send a purchase to each side, then reconnect to compare their records.</p>
+        <div class="partition-actions">
+            <button type="button" data-action="isolate">Isolate current leader</button>
+            <button type="button" class="secondary" data-action="reconnect" disabled>Reconnect cluster</button>
+        </div>
+        <p id="partition-status" role="status">Ready to start.</p>
+        <div class="partition-results" hidden>
+            <svg viewBox="0 0 300 175" role="img" aria-label="Demo network links. Dashed lines indicate a disconnected link.">
+                <g class="partition-links">
+                    <line data-link="12" x1="150" y1="30" x2="50" y2="137"/>
+                    <line data-link="13" x1="150" y1="30" x2="250" y2="137"/>
+                    <line data-link="23" x1="50" y1="137" x2="250" y2="137"/>
+                </g>
+                {% for id,x,y in [(1,150,30),(2,50,137),(3,250,137)] %}
+                <g class="partition-node" data-id="{{ id }}" transform="translate({{ x }} {{ y }})">
+                    <circle r="25"/><text text-anchor="middle" dy=".35em">N{{ id }}</text>
+                </g>
+                {% endfor %}
+            </svg>
+            <div class="partition-readings"><table>
+                <thead><tr><th>Node</th><th>Role</th><th>Term</th><th>Committed / applied</th><th>Stock</th><th>Sales</th></tr></thead>
+                <tbody id="partition-nodes"></tbody>
+            </table></div>
+            <ul id="partition-orders" aria-label="Purchase attempts"></ul>
+        </div>
+    </section>
+    <script defer src="/static/partition-demo.js"></script>
 
     <script defer src="/static/cluster.js"></script>
 

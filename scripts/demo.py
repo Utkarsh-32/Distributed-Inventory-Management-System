@@ -12,8 +12,7 @@ scripts/demo.ps1, where the node hostnames resolve:
 Commands:
     status    show every node's Raft role and term, and the leader
     leader    print only the leader's service name (for scripts), e.g. node2
-    features  walk through warehouse stock, orders, supplier restocks and
-              delivery updates against the leader
+    features  walk through warehouse stock, orders, supplier restocks against the leader
     order     place one order against the current leader (used after
               failover to show the cluster still accepts requests)
     wait      wait until a leader is elected (up to --timeout seconds)
@@ -260,7 +259,6 @@ def run_features():
 
     step("Order 40 laptops with automatic allocation (splits across warehouses)")
     client.post("order", {"item_id": "item_101", "quantity": 40})
-    split_order_id = latest_order_id(client)
 
     step("Try to order more laptops than are left (no overselling)")
     client.post("order", {"item_id": "item_101", "quantity": 1000})
@@ -291,17 +289,9 @@ def run_features():
     step("SSD stock after the shipment arrives")
     print_stock(client, {"item_108"})
 
-    heading("5. Delivery updates")
-    step("Order 1 SSD and track its delivery")
-    client.post("order", {"item_id": "item_108", "quantity": 1})
-    order_id = latest_order_id(client)
-
-    for status in ["PACKED", "SHIPPED", "OUT_FOR_DELIVERY", "DELIVERED"]:
-        client.post("delivery_status", {"order_id": order_id, "status": status})
-
-    step(f"Cancel the 40-laptop order #{split_order_id}; stock returns to its warehouses")
-    client.post("delivery_status", {"order_id": split_order_id, "status": "CANCELLED"})
-    print_stock(client, {"item_101"})
+    heading("5. Replication scope")
+    print("Orders, transfers and supplier restocks use the replicated log.")
+    print("Delivery updates/cancellation are local-only and are deliberately excluded from this tour.")
 
     heading("Done")
     print("Open http://localhost:8000 (alice / password) to see the same data in the dashboard.")

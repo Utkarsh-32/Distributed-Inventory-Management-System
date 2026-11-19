@@ -1170,3 +1170,18 @@ button.secondary:hover {
 #shortage-policy { margin: 1rem 0 1.4rem; color: var(--muted); line-height: 1.5; }
 .shortage-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .65rem; }
 .shortage-actions button { width: auto; margin: 0; }
+
+.partition-actions { display: flex; flex-wrap: wrap; gap: .6rem; }
+.partition-actions button { width: auto; margin: 0; }
+.partition-actions button:disabled { opacity: .48; cursor: default; }
+#partition-status { color: var(--muted); line-height: 1.5; }
+.partition-results:not([hidden]) { display: grid; grid-template-columns: minmax(140px,1fr) minmax(0,3fr); gap: 1rem; align-items: center; }
+.partition-results svg { width: 100%; max-height: 180px; }
+.partition-links line { stroke: #52dbc5; stroke-width: 3; }
+.partition-links .cut { stroke: #f6bc65; stroke-dasharray: 7 6; }
+.partition-node circle { fill: #182d35; stroke: #52dbc5; stroke-width: 2; }
+.partition-node.cut circle { fill: #33293a; stroke: #f6bc65; }
+.partition-node text { fill: #edf1fb; font-weight: 650; }
+.partition-readings { overflow-x: auto; }
+#partition-orders { grid-column: 1/-1; margin: 0; padding-left: 1.4rem; line-height: 1.7; }
+@media (max-width: 700px) { .partition-results:not([hidden]) { grid-template-columns: minmax(0,1fr); } }

@@ -10,6 +10,12 @@ authentication, inventory viewing, order processing, historical-sales-based
 demand forecasts, reorder recommendations, and AI-assisted analytics.
 
 
+## Current system scope
+
+The integrated system also supports balanced multiwarehouse orders, replicated transfers and supplier restock workflows, persistent Raft logs, leader recovery, and an isolated partition experiment. Delivery updates/cancellation and sessions remain local to a node; reads do not use a linearizable-read protocol. Default numerical forecasts are calculated from sales history, with optional model-generated qualitative insights.
+
+The individual statements below are a draft: proposed roles and personal learning must be verified by the named team members before submission. This technical update does not assign new contributions.
+
 ## Team member contributions
 
 | Team member | Student ID | Primary contribution | Key work and learning |
