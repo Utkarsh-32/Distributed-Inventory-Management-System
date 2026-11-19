@@ -10,7 +10,12 @@ import inventory_pb2
 import inventory_pb2_grpc
 
 
-LLM_SERVER_ADDRESS = "localhost:50051"
+# Address this server listens on.  Docker sets it to 0.0.0.0:50051 so the
+# application-server containers can reach it.
+LLM_SERVER_ADDRESS = os.getenv(
+    "LLM_LISTEN_ADDRESS",
+    "localhost:50051"
+)
 MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
 MODEL_KEEP_ALIVE = "10m"
 

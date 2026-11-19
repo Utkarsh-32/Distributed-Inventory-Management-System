@@ -15,12 +15,12 @@
 
     <link
         rel="stylesheet"
-        href="/static/style.css"
+        href="/static/style.css?v=partition-demo-1"
     >
 
 </head>
 
-<body>
+<body class="inventory-workspace">
 
 <nav class="navbar">
 
@@ -45,24 +45,73 @@
 
 <div class="container">
 
-    <div class="page-heading">
-
-        <h1>
-            Inventory Dashboard
-        </h1>
-
-        <p>
-            Welcome, {{ username }}
-        </p>
-
-    </div>
-
+    <header class="workspace-heading">
+        <h1>Inventory dashboard</h1>
+        <nav aria-label="Dashboard sections">
+            <a href="#inventory">Inventory</a>
+            {% if warehouses|length >= 2 %}<a href="#transfers">Transfers</a>{% endif %}
+            {% if warehouses and suppliers %}<a href="#restocks">Replenishment</a>{% endif %}
+            <a href="#cluster">Cluster</a>
+            <a href="#partition-demo">Partition demo</a>
+        </nav>
+    </header>
 
     {% if message %}
 
-    <div class="alert {{ message_type }}">
+    <div id="dashboard-message" class="alert {{ message_type }}" role="alert">
 
         {{ message }}
+
+    </div>
+
+    {% endif %}
+
+
+    <!-- ============================================ -->
+    <!-- WAREHOUSES -->
+    <!-- ============================================ -->
+
+    {% if warehouses %}
+
+    {% set network_units = warehouses|sum(attribute='total_units') %}
+    <div class="warehouse-grid">
+
+        {% for warehouse in warehouses %}
+
+        <div class="warehouse-card">
+
+            <div class="warehouse-name">
+                {{ warehouse.name }}
+            </div>
+
+            <div class="warehouse-location">
+                {{ warehouse.location }}
+            </div>
+
+            <div class="warehouse-stats">
+
+                <div>
+                    <span class="stat-value">{{ warehouse.total_units }}</span>
+                    <span class="stat-label">units in stock</span>
+                </div>
+
+                <div>
+                    <span class="stat-value {% if warehouse.low_stock_items %}status-low{% else %}status-good{% endif %}">
+                        {{ warehouse.low_stock_items }}
+                    </span>
+                    <span class="stat-label">low-stock products</span>
+                </div>
+
+            </div>
+
+            {% set share = (100 * warehouse.total_units / network_units)|round(1) if network_units else 0 %}
+            <div class="stock-share">
+                <div class="share-track" aria-hidden="true"><span style="width: {{ share }}%"></span></div>
+                <span>{{ share }}% of network stock</span>
+            </div>
+        </div>
+
+        {% endfor %}
 
     </div>
 
@@ -73,12 +122,32 @@
     <!-- INVENTORY -->
     <!-- ============================================ -->
 
-    <div class="card">
+    <div class="card" id="inventory">
 
         <h2>
             Current Inventory
         </h2>
 
+        {% if warehouses %}
+        <p class="section-help">
+            Stock per warehouse. Red values are at or below
+            {{ low_stock_threshold }} units. Leave the warehouse on
+            <strong>Auto</strong> for a single shipment when possible. Larger orders split across warehouses in proportion to available stock.
+        </p>
+        {% endif %}
+
+        {% if inventory %}
+        <div class="inventory-tools" data-threshold="{{ low_stock_threshold }}" hidden>
+            <label>Find product <input id="product-search" type="search" placeholder="Name or item ID"></label>
+            <label>Stock view <select id="stock-view">
+                <option value="">All products</option>
+                {% for warehouse in warehouses %}
+                <option value="{{ warehouse.warehouse_id }}">Low stock · {{ warehouse.name }}</option>
+                {% endfor %}
+            </select></label>
+            <output id="product-count" aria-live="polite"></output>
+        </div>
+        {% endif %}
         <table>
 
             <thead>
@@ -90,8 +159,14 @@
                     </th>
 
                     <th>
-                        Stock
+                        Total
                     </th>
+
+                    {% for warehouse in warehouses %}
+                    <th class="numeric">
+                        {{ warehouse.name }}
+                    </th>
+                    {% endfor %}
 
                     <th>
                         Order
@@ -105,7 +180,7 @@
 
             {% for item in inventory %}
 
-                <tr>
+                <tr data-product="{{ item.name }} {{ item.item_id }}" data-stock="{{ (item.by_warehouse or {})|tojson|forceescape }}">
 
                     <td>
                         {{ item.name }}
@@ -127,12 +202,21 @@
 
                     </td>
 
+                    {% for warehouse in warehouses %}
+                    {% set wh_stock = item.by_warehouse.get(warehouse.warehouse_id, 0) %}
+                    <td class="numeric">
+                        <span class="{% if wh_stock <= low_stock_threshold %}low-stock{% endif %}">
+                            {{ wh_stock }}
+                        </span>
+                    </td>
+                    {% endfor %}
+
                     <td>
 
                         <form
                             method="post"
                             action="/order"
-                            class="order-form"
+                            class="order-form" data-name="{{ item.name }}"
                         >
 
                             <input
@@ -147,10 +231,23 @@
                                 class="idempotency_key"
                             >
 
+                            {% if warehouses %}
+                            <select name="warehouse_id" aria-label="Ship from warehouse">
+                                <option value="">Auto</option>
+                                {% for warehouse in warehouses %}
+                                <option value="{{ warehouse.warehouse_id }}" data-stock="{{ item.by_warehouse.get(warehouse.warehouse_id, 0) }}">
+                                    {{ warehouse.name }} ({{ item.by_warehouse.get(warehouse.warehouse_id, 0) }})
+                                </option>
+                                {% endfor %}
+                            </select>
+                            {% endif %}
+
                             <input
                                 type="number"
                                 name="quantity"
                                 min="1"
+                                max="{{ item.stock }}"
+                                data-total="{{ item.stock }}"
                                 placeholder="Qty"
                                 required
                             >
@@ -170,6 +267,8 @@
             </tbody>
 
         </table>
+        <p id="inventory-empty" hidden>No products match these filters.</p>
+        <script defer src="/static/inventory-filter.js"></script>
 
     </div>
 
@@ -204,6 +303,389 @@
 
             <p class="empty">
                 You have not placed any orders yet.
+            </p>
+
+        {% endif %}
+
+    </div>
+
+    <!-- ============================================ -->
+    <!-- SUPPLIER RESTOCK REQUESTS -->
+    <!-- ============================================ -->
+
+    {% if warehouses|length >= 2 and inventory %}
+    {% set retry = request.query_params %}
+    <section class="card" id="transfers">
+        <h2>Warehouse transfers</h2>
+        <form method="post" action="/transfer" class="restock-form">
+            <input type="hidden" name="idempotency_key" class="idempotency_key" value="{{ retry.get('transfer_key', '') }}">
+            <label>Product <select name="item_id" required>
+                {% for item in inventory %}
+                <option value="{{ item.item_id }}" {% if retry.get('transfer_item_id') == item.item_id %}selected{% endif %}>{{ item.name }}</option>
+                {% endfor %}
+            </select></label>
+            {% for field, label in [('source', 'From warehouse'), ('destination', 'To warehouse')] %}
+            <label>{{ label }} <select name="{{ field }}" required>
+                {% for warehouse in warehouses %}
+                <option value="{{ warehouse.warehouse_id }}" {% if retry.get('transfer_' ~ field) == warehouse.warehouse_id or (not retry.get('transfer_' ~ field) and field == 'destination' and loop.index == 2) %}selected{% endif %}>{{ warehouse.name }}</option>
+                {% endfor %}
+            </select></label>
+            {% endfor %}
+            <label>Units <input type="number" name="quantity" min="1" max="2147483647" required value="{{ retry.get('transfer_quantity', '') }}"></label>
+            <button type="submit">Transfer stock</button>
+        </form>
+    </section>
+    {% endif %}
+
+    {% if warehouses and suppliers %}
+
+    {% set restock_actions = {
+        "APPROVED": "Approve",
+        "REJECTED": "Reject",
+        "CANCELLED": "Cancel",
+        "SHIPPED": "Mark Shipped",
+        "RECEIVED": "Mark Received",
+    } %}
+
+    <div class="card" id="restocks">
+
+        <h2>Supplier restock requests</h2>
+        <p class="reorder-policy">At {{ low_stock_threshold }} units or fewer, a sale or outgoing transfer
+            opens a request to bring that warehouse back to {{ reorder_target }} units.
+            Receiving the shipment updates stock.</p>
+        <details class="manual-restock">
+            <summary>New manual request</summary>
+        <form method="post" action="/restock" class="restock-form">
+
+            <input
+                type="hidden"
+                name="idempotency_key"
+                class="idempotency_key"
+            >
+
+            <label>
+                Product
+                <select name="item_id" required>
+                    {% for item in inventory %}
+                    <option value="{{ item.item_id }}">
+                        {{ item.name }} (total {{ item.stock }})
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <label>
+                Deliver to
+                <select name="warehouse_id" required>
+                    {% for warehouse in warehouses %}
+                    <option value="{{ warehouse.warehouse_id }}">
+                        {{ warehouse.name }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <label>
+                Supplier
+                <select name="supplier_id" required>
+                    {% for supplier in suppliers %}
+                    <option value="{{ supplier.supplier_id }}">
+                        {{ supplier.name }} ({{ supplier.lead_time_days }}-day lead time)
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <label>
+                Quantity
+                <input type="number" name="quantity" min="1" required>
+            </label>
+
+            <label class="wide">
+                Note
+                <input type="text" name="note" maxlength="500" placeholder="Optional">
+            </label>
+
+            <button type="submit">
+                Request Restock
+            </button>
+
+        </form>
+        </details>
+
+        {% if restock_requests %}
+
+        <table class="workflow-table">
+
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Product</th>
+                    <th>Warehouse</th>
+                    <th>Supplier</th>
+                    <th class="numeric">Qty</th>
+                    <th>Status</th>
+                    <th>Expected by</th>
+                    <th>Update</th>
+                </tr>
+            </thead>
+
+            <tbody>
+
+            {% for restock in restock_requests %}
+
+                <tr>
+
+                    <td>{{ restock.id }}</td>
+
+                    <td>
+                        {{ restock.product_name }}
+                        {% if restock.note %}
+                        <div class="muted">{{ restock.note }}</div>
+                        {% endif %}
+                    </td>
+
+                    <td>{{ restock.warehouse_name }}</td>
+
+                    <td>{{ restock.supplier_name }}</td>
+
+                    <td class="numeric">{{ restock.quantity }}</td>
+
+                    <td>
+                        <span class="badge badge-{{ restock.status | lower }}">
+                            {{ restock.status | replace("_", " ") | title }}
+                        </span>
+                        {% if restock.automatic %}
+                        <div class="request-origin">Automatic reorder</div>
+                        {% elif restock.requested_by %}
+                        <div class="muted">by {{ restock.requested_by }}</div>
+                        {% endif %}
+                    </td>
+
+                    <td>
+                        {% if restock.status == "RECEIVED" %}
+                        <span class="muted">Received {{ restock.received_at[:10] }}</span>
+                        {% elif restock.status in ["REJECTED", "CANCELLED"] %}
+                        <span class="muted">—</span>
+                        {% else %}
+                        {{ restock.expected_by }}
+                        {% endif %}
+                    </td>
+
+                    <td>
+                        <div class="action-buttons">
+                        {% for next_status in restock.next_statuses %}
+                            <form method="post" action="/restock/{{ restock.id }}/status">
+                                <input type="hidden" name="status" value="{{ next_status }}">
+                                <input type="hidden" name="idempotency_key" class="idempotency_key">
+                                <button
+                                    type="submit"
+                                    class="small {% if next_status in ['REJECTED', 'CANCELLED'] %}secondary{% endif %}"
+                                >
+                                    {{ restock_actions.get(next_status, next_status | title) }}
+                                </button>
+                            </form>
+                        {% else %}
+                            <span class="muted">Done</span>
+                        {% endfor %}
+                        </div>
+                    </td>
+
+                </tr>
+
+            {% endfor %}
+
+            </tbody>
+
+        </table>
+
+        {% else %}
+
+            <p class="empty">
+                No restock requests yet. Low-stock requests will appear here.
+            </p>
+
+        {% endif %}
+
+    </div>
+
+    {% endif %}
+
+
+    <!-- ============================================ -->
+    <!-- DELIVERY TRACKING -->
+    <!-- ============================================ -->
+
+    <div class="card cluster-card" id="cluster">
+
+        <div class="cluster-header">
+            <h2>Raft Cluster</h2>
+            <div class="cluster-summary">
+                <span class="cluster-pill" id="cluster-health">connecting…</span>
+                <span class="muted" id="cluster-meta"></span>
+            </div>
+        </div>
+
+        <p class="section-help">
+            Node status and replication progress update every two seconds.
+        </p>
+
+        <div class="cluster-nodes" id="cluster-nodes">
+            <!-- filled by JavaScript -->
+        </div>
+
+        <details class="cluster-events" open>
+            <summary>Recent events</summary>
+            <ul id="cluster-events">
+                <li class="muted">Waiting for the first status update…</li>
+            </ul>
+        </details>
+
+    </div>
+
+
+    <section class="card" id="partition-demo" aria-labelledby="partition-heading">
+        <h2 id="partition-heading">Network partition · the last laptop</h2>
+        <p class="section-help">Three temporary nodes share one demo laptop. Isolate the leader to send a purchase to each side, then reconnect to compare their records.</p>
+        <div class="partition-actions">
+            <button type="button" data-action="isolate">Isolate current leader</button>
+            <button type="button" class="secondary" data-action="reconnect" disabled>Reconnect cluster</button>
+        </div>
+        <p id="partition-status" role="status">Ready to start.</p>
+        <div class="partition-results" hidden>
+            <svg viewBox="0 0 300 175" role="img" aria-label="Demo network links. Dashed lines indicate a disconnected link.">
+                <g class="partition-links">
+                    <line data-link="12" x1="150" y1="30" x2="50" y2="137"/>
+                    <line data-link="13" x1="150" y1="30" x2="250" y2="137"/>
+                    <line data-link="23" x1="50" y1="137" x2="250" y2="137"/>
+                </g>
+                {% for id,x,y in [(1,150,30),(2,50,137),(3,250,137)] %}
+                <g class="partition-node" data-id="{{ id }}" transform="translate({{ x }} {{ y }})">
+                    <circle r="25"/><text text-anchor="middle" dy=".35em">N{{ id }}</text>
+                </g>
+                {% endfor %}
+            </svg>
+            <div class="partition-readings"><table>
+                <thead><tr><th>Node</th><th>Role</th><th>Term</th><th>Committed / applied</th><th>Stock</th><th>Sales</th></tr></thead>
+                <tbody id="partition-nodes"></tbody>
+            </table></div>
+            <ul id="partition-orders" aria-label="Purchase attempts"></ul>
+        </div>
+    </section>
+    <script defer src="/static/partition-demo.js"></script>
+
+    <script defer src="/static/cluster.js"></script>
+
+    <div class="card" id="deliveries">
+
+        <h2>
+            Delivery Tracking
+        </h2>
+
+        <p class="section-help">
+            Recent orders from all customers. Orders can be cancelled until
+            they ship; cancelled units go back to the warehouses they came from.
+        </p>
+
+        {% if deliveries %}
+
+        <table class="workflow-table">
+
+            <thead>
+                <tr>
+                    <th>Order</th>
+                    <th>Product</th>
+                    <th class="numeric">Qty</th>
+                    <th>Customer</th>
+                    <th>Ships from</th>
+                    <th>Status</th>
+                    <th>Update</th>
+                </tr>
+            </thead>
+
+            <tbody>
+
+            {% for delivery in deliveries %}
+
+                <tr>
+
+                    <td>#{{ delivery.order_id }}</td>
+
+                    <td>{{ delivery.product_name }}</td>
+
+                    <td class="numeric">{{ delivery.quantity }}</td>
+
+                    <td>{{ delivery.username or "—" }}</td>
+
+                    <td>
+                        {% for allocation in delivery.allocations %}
+                        <div>{{ allocation.warehouse_name }} ({{ allocation.quantity }})</div>
+                        {% else %}
+                        <span class="muted">—</span>
+                        {% endfor %}
+                    </td>
+
+                    <td>
+                        <span class="badge badge-{{ delivery.delivery_status | lower }}">
+                            {{ delivery.delivery_status | replace("_", " ") | title }}
+                        </span>
+
+                        {% if delivery.events %}
+                        <details class="timeline">
+                            <summary>History</summary>
+                            <ol>
+                            {% for event in delivery.events %}
+                                <li>
+                                    <strong>{{ event.status | replace("_", " ") | title }}</strong>
+                                    <span class="muted">
+                                        {{ event.created_at[:16] | replace("T", " ") }} UTC
+                                        {% if event.updated_by %}· {{ event.updated_by }}{% endif %}
+                                    </span>
+                                    {% if event.note %}<div class="muted">{{ event.note }}</div>{% endif %}
+                                </li>
+                            {% endfor %}
+                            </ol>
+                        </details>
+                        {% endif %}
+                    </td>
+
+                    <td>
+                        <div class="action-buttons">
+                        {% for next_status in delivery.next_statuses %}
+                            <form
+                                method="post"
+                                action="/deliveries/{{ delivery.order_id }}/status"
+                                {% if next_status == "CANCELLED" %}
+                                onsubmit="return confirm('Cancel order #{{ delivery.order_id }} and return its stock?');"
+                                {% endif %}
+                            >
+                                <input type="hidden" name="status" value="{{ next_status }}">
+                                <input type="hidden" name="idempotency_key" class="idempotency_key">
+                                <button
+                                    type="submit"
+                                    class="small {% if next_status == 'CANCELLED' %}secondary{% endif %}"
+                                >
+                                    {% if next_status == "CANCELLED" %}Cancel{% else %}Mark {{ next_status | replace("_", " ") | title }}{% endif %}
+                                </button>
+                            </form>
+                        {% else %}
+                            <span class="muted">Done</span>
+                        {% endfor %}
+                        </div>
+                    </td>
+
+                </tr>
+
+            {% endfor %}
+
+            </tbody>
+
+        </table>
+
+        {% else %}
+
+            <p class="empty">
+                No orders to deliver yet.
             </p>
 
         {% endif %}
@@ -1007,8 +1489,67 @@ function escapeHtml(value) {
 </script>
     
 
+<dialog id="shortage-dialog" aria-labelledby="shortage-title" aria-describedby="shortage-policy">
+    <form method="post" action="/order/shortage">
+        <h2 id="shortage-title">Request more stock?</h2>
+        <p class="shortage-product"></p>
+        <dl class="shortage-amounts">
+            <div><dt>Requested</dt><dd data-value="quantity"></dd></div>
+            <div><dt>Available</dt><dd data-value="available"></dd></div>
+            <div><dt>Shortfall</dt><dd data-value="confirmed_shortage"></dd></div>
+        </dl>
+        <p id="shortage-policy">Incoming stock counts toward the shortfall. Place your order after the shipment arrives. Available units remain open for sale.</p>
+        <input type="hidden" name="item_id">
+        <input type="hidden" name="quantity">
+        <input type="hidden" name="confirmed_shortage">
+        <input type="hidden" name="idempotency_key">
+        <div class="shortage-actions">
+            <button type="button" class="secondary" autofocus>Cancel</button>
+            <button type="submit">Request restock</button>
+        </div>
+    </form>
+</dialog>
+
 <script>
 document.addEventListener("DOMContentLoaded", function () {
+    const dialog = document.getElementById("shortage-dialog");
+    const restock = dialog.querySelector("form");
+    dialog.querySelector("[type=button]").addEventListener("click", () => dialog.close());
+    restock.addEventListener("submit", () => dialog.close());
+
+    for (const form of document.querySelectorAll(".order-form")) {
+        const quantity = form.elements.quantity;
+        const warehouse = form.elements.warehouse_id;
+        function checkStock() {
+            const selectedStock = warehouse?.selectedOptions[0]?.dataset.stock;
+            const available = Math.min(Number(quantity.dataset.total),
+                                       Number(selectedStock ?? quantity.dataset.total));
+            if (warehouse?.value) quantity.max = String(available);
+            else quantity.max = "2147483647";
+            quantity.setCustomValidity(warehouse?.value && quantity.valueAsNumber > available
+                ? `Only ${available} units are available for this selection. Enter a smaller quantity.`
+                : "");
+        }
+        quantity.addEventListener("input", checkStock);
+        warehouse?.addEventListener("change", checkStock);
+        form.addEventListener("submit", event => {
+            const total = Number(quantity.dataset.total);
+            const missing = quantity.valueAsNumber - total;
+            if (warehouse?.value || missing <= 0) return;
+            event.preventDefault();
+            for (const name of ["quantity", "item_id", "idempotency_key"]) {
+                restock.elements[name].value = form.elements[name].value;
+            }
+            restock.elements.confirmed_shortage.value = missing;
+            dialog.querySelector(".shortage-product").textContent = form.dataset.name;
+            dialog.querySelector('[data-value="quantity"]').textContent = quantity.value;
+            dialog.querySelector('[data-value="available"]').textContent = total;
+            dialog.querySelector('[data-value="confirmed_shortage"]').textContent = missing;
+            dialog.showModal();
+        });
+        checkStock();
+    }
+
     const keyFields = document.querySelectorAll(
         ".idempotency_key"
     );

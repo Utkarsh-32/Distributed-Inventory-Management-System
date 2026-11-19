@@ -1,9 +1,10 @@
+import argparse
 import hashlib
 import secrets
 from datetime import datetime, timezone
 
 import database
-from mock_data import PRODUCTS, get_all_history_rows
+from mock_data import PRODUCTS, SUPPLIERS, WAREHOUSES, get_all_history_rows
 
 
 def utc_now():
@@ -50,10 +51,17 @@ def seed_database():
         conn.execute("BEGIN")
 
         # Delete dependent rows first because of foreign keys.
+        conn.execute("DELETE FROM delivery_events")
+        conn.execute("DELETE FROM order_allocations")
+        conn.execute("DELETE FROM restock_events")
+        conn.execute("DELETE FROM restock_requests")
+        conn.execute("DELETE FROM warehouse_stock")
         conn.execute("DELETE FROM sessions")
         conn.execute("DELETE FROM orders")
         conn.execute("DELETE FROM sales_history")
         conn.execute("DELETE FROM products")
+        conn.execute("DELETE FROM suppliers")
+        conn.execute("DELETE FROM warehouses")
         conn.execute("DELETE FROM users")
 
         # --------------------------------------------------
@@ -113,6 +121,13 @@ def seed_database():
             get_all_history_rows(),
         )
 
+        # --------------------------------------------------
+        # 4. Warehouses, suppliers and per-warehouse stock
+        # --------------------------------------------------
+
+        database._ensure_reference_data(conn)
+        database._ensure_warehouse_stock(conn)
+
         conn.commit()
 
     except Exception:
@@ -134,10 +149,40 @@ def seed_database():
         "Historical observations:",
         len(get_all_history_rows())
     )
+    print(f"Warehouses: {len(WAREHOUSES)}")
+    print(f"Suppliers: {len(SUPPLIERS)}")
     print()
     print("Wireless Mouse initial stock: 20")
+    print(f"Database: {database.DB_PATH}")
     print("========================================")
 
 
+def database_has_users():
+    database.initialize_database()
+
+    conn = database.get_connection()
+
+    try:
+        return conn.execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
-    seed_database()
+    parser = argparse.ArgumentParser(
+        description="Reset the demo database and load demo data."
+    )
+    parser.add_argument(
+        "--if-empty",
+        action="store_true",
+        help=(
+            "Only seed when the database has no users yet. Used by the "
+            "Docker and start scripts so restarts keep existing data."
+        ),
+    )
+    args = parser.parse_args()
+
+    if args.if_empty and database_has_users():
+        print(f"Database already has data, skipping seed: {database.DB_PATH}")
+    else:
+        seed_database()

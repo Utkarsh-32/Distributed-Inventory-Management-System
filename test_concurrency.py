@@ -1,13 +1,14 @@
 from concurrent.futures import ThreadPoolExecutor
 
 import grpc
+import os
 import uuid
 
 import inventory_pb2
 import inventory_pb2_grpc
 
 
-APP_SERVER_ADDRESS = "localhost:50052"
+APP_SERVER_ADDRESS = os.getenv("APP_SERVER_ADDRESS", "localhost:50052")
 
 ITEM_ID = "item_102"
 
@@ -139,7 +140,7 @@ def main():
             f"Expected fresh stock "
             f"{EXPECTED_INITIAL_STOCK}, "
             f"but found {starting_stock}. "
-            f"Run 'python seed_db.py' first."
+            f"Use a fresh disposable cluster; do not reseed an existing Raft log."
         )
 
     # --------------------------------------------------------
