@@ -39,6 +39,9 @@ x-node-env: &node-env
   APP_SERVER_ADDRESS: 0.0.0.0:50052
   LLM_SERVER_ADDRESS: llm:50051
   USE_LLM_FORECASTS: ${USE_LLM_FORECASTS:-false}
+  # Shared by all nodes so a login stays valid after the leader changes.
+  # Set your own value outside a demo: SESSION_SECRET=... docker compose up
+  SESSION_SECRET: ${SESSION_SECRET:-dims-demo-session-secret}
 
 services:
   llm:

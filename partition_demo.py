@@ -45,7 +45,7 @@ class DemoLinks(grpc.ServerInterceptor):
         )
 
 
-def serve_demo_node(node_id, parent_pid):
+def serve_demo_node(node_id, parent_pid, preferred_leader=0):
     import database
     from raft_node import RaftNode
     from raft_server import RaftServicer
@@ -70,6 +70,12 @@ def serve_demo_node(node_id, parent_pid):
         time.sleep(.05)
     peers = [(directory / f"node{i}.addr").read_text() for i in (1, 2, 3) if i != node_id]
     node = RaftNode(node_id, address, peers)
+    if preferred_leader and node_id != preferred_leader:
+        # Give the preferred node the first election so the demo leader
+        # matches the live cluster's leader.  If it cannot win, the other
+        # nodes time out normally and elect one of themselves.
+        with node.lock:
+            node.election_deadline = time.monotonic() + 12
     rpc.add_RaftServiceServicer_to_server(RaftServicer(node, ""), server)
     server.start()
     threading.Thread(target=node.run_timer, daemon=True).start()
@@ -84,6 +90,7 @@ class PartitionDemo:
         self.reconnect_event = threading.Event()
         self.stop_event = threading.Event()
         self.state = {"phase": "idle", "nodes": [], "orders": {}, "isolated": None}
+        self.preferred_leader = 0
         self.owner = None
         self.worker = None
 
@@ -98,11 +105,12 @@ class PartitionDemo:
                         "nodes": [], "orders": {}, "isolated": None}
             return copy.deepcopy(self.state)
 
-    def start(self, token):
+    def start(self, token, preferred_leader=None):
         with self.lock:
             if self.worker and self.worker.is_alive():
                 return False
             self.owner = self.owner_key(token)
+            self.preferred_leader = preferred_leader if preferred_leader in (1, 2, 3) else 0
             self.reconnect_event.clear()
             self.stop_event.clear()
             self.state = {"phase": "starting", "nodes": [], "orders": {}, "isolated": None}
@@ -136,7 +144,8 @@ class PartitionDemo:
                 try:
                     for i in (1, 2, 3):
                         processes.append(subprocess.Popen(
-                            [sys.executable, str(Path(__file__).resolve()), str(i), str(os.getpid())],
+                            [sys.executable, str(Path(__file__).resolve()), str(i), str(os.getpid()),
+                             str(self.preferred_leader)],
                             cwd=directory, env={**os.environ, "INVENTORY_DB_PATH": str(directory / f"{i}.db")},
                             stdout=subprocess.DEVNULL,
                         ))
@@ -255,4 +264,4 @@ class PartitionDemo:
 
 
 if __name__ == "__main__":
-    serve_demo_node(int(sys.argv[1]), int(sys.argv[2]))
+    serve_demo_node(int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]) if len(sys.argv) > 3 else 0)
