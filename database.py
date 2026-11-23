@@ -243,6 +243,13 @@ def initialize_database():
         CREATE INDEX IF NOT EXISTS idx_sessions_user_id
             ON sessions(user_id);
 
+        -- Signed session tokens issued by another node that were
+        -- logged out here.  Rows are kept until the token expires.
+        CREATE TABLE IF NOT EXISTS revoked_sessions (
+            token_hash TEXT PRIMARY KEY,
+            expires_at INTEGER NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_orders_user_id
             ON orders(user_id);
 
@@ -531,8 +538,17 @@ def authenticate_user(username: str, password: str):
         ):
             return None
 
-        # Generate a cryptographically random session token.
+        # Generate a cryptographically random session token.  When the
+        # nodes share SESSION_SECRET it is also signed, so every node can
+        # accept it after a leader change.
         token = secrets.token_urlsafe(32)
+        if SESSION_SECRET:
+            token = sign_session_token(
+                row["id"],
+                username,
+                int(datetime.now(timezone.utc).timestamp()) + SIGNED_SESSION_SECONDS,
+                token,
+            )
 
         # We store only the hash of the token.
         token_hash = hashlib.sha256(
@@ -584,18 +600,87 @@ def get_user_id_from_token(token: str):
             (token_hash,),
         ).fetchone()
 
-        if row is None:
-            return None
+        if row is not None:
+            return row["user_id"]
 
-        return row["user_id"]
+        # Not created on this node: accept it if another node signed it.
+        signed = verify_signed_session(conn, token)
+        if signed is None:
+            return None
+        revoked = conn.execute(
+            "SELECT 1 FROM revoked_sessions WHERE token_hash = ?",
+            (token_hash,),
+        ).fetchone()
+        return None if revoked else signed[0]
 
     finally:
         conn.close()
 
 
+# ============================================================
+# SIGNED SESSIONS
+#
+# Sessions live in each node's own database, so a token created on the
+# old leader is unknown to a newly elected leader.  With a SESSION_SECRET
+# shared by all nodes, tokens are signed and any node can verify them.
+# ============================================================
+
+SESSION_SECRET = os.getenv("SESSION_SECRET", "").encode("utf-8")
+SIGNED_SESSION_SECONDS = 12 * 60 * 60
+SIGNED_SESSION_PREFIX = "s1"
+
+
+def _session_signature(user_id, username, expires_at, nonce):
+    message = f"{SIGNED_SESSION_PREFIX}.{user_id}.{username}.{expires_at}.{nonce}"
+    return hmac.new(SESSION_SECRET, message.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def sign_session_token(user_id, username, expires_at, nonce):
+    signature = _session_signature(user_id, username, expires_at, nonce)
+    return f"{SIGNED_SESSION_PREFIX}.{user_id}.{expires_at}.{nonce}.{signature}"
+
+
+def verify_signed_session(conn, token):
+    """
+    Return (user_id, expires_at) for a valid, unexpired signed token,
+    otherwise None.  The username in the signature must match this
+    node's user with the same ID.
+    """
+    if not SESSION_SECRET:
+        return None
+
+    parts = token.split(".")
+    if len(parts) != 5 or parts[0] != SIGNED_SESSION_PREFIX:
+        return None
+
+    _, user_text, expires_text, nonce, signature = parts
+    try:
+        user_id = int(user_text)
+        expires_at = int(expires_text)
+    except ValueError:
+        return None
+
+    if expires_at <= datetime.now(timezone.utc).timestamp():
+        return None
+
+    user = conn.execute(
+        "SELECT username FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    if user is None:
+        return None
+
+    expected = _session_signature(user_id, user["username"], expires_at, nonce)
+    if not hmac.compare_digest(expected, signature):
+        return None
+
+    return user_id, expires_at
+
+
 def logout_user(token: str):
     """
-    Delete the session associated with the token.
+    Delete the session associated with the token.  A signed token is also
+    recorded as revoked so this node stops accepting it.
     """
 
     token_hash = hashlib.sha256(
@@ -612,10 +697,21 @@ def logout_user(token: str):
             """,
             (token_hash,),
         )
+        removed = cursor.rowcount > 0
+
+        signed = verify_signed_session(conn, token)
+        if signed is not None:
+            now = int(datetime.now(timezone.utc).timestamp())
+            conn.execute("DELETE FROM revoked_sessions WHERE expires_at <= ?", (now,))
+            conn.execute(
+                "INSERT OR IGNORE INTO revoked_sessions (token_hash, expires_at) VALUES (?, ?)",
+                (token_hash, signed[1]),
+            )
+            removed = True
 
         conn.commit()
 
-        return cursor.rowcount > 0
+        return removed
 
     finally:
         conn.close()

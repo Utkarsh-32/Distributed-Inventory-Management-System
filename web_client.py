@@ -90,6 +90,18 @@ def cluster_node_status(address):
     }
 
 
+def live_leader_id():
+    """Node ID of the live cluster's leader, or None while it is unclear."""
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        nodes = [n for n in pool.map(cluster_node_status, dict.fromkeys(RAFT_ADDRESSES)) if n["reachable"]]
+    if not nodes:
+        return None
+    term = max(n["term"] for n in nodes)
+    leaders = [n["node_id"] for n in nodes
+               if n["term"] == term and n["role"] == "leader" and n["leader_id"] == n["node_id"]]
+    return leaders[0] if len(leaders) == 1 else None
+
+
 def demo_token(request):
     token = get_session_token(request)
     if not token:
@@ -114,7 +126,7 @@ def partition_action(action: str, request: Request):
             raise HTTPException(503, "Unable to verify your session. Try again.")
         if auth.status != "SUCCESS":
             raise HTTPException(401, "Sign in again to start a demo.")
-        if not partition_demo.start(token):
+        if not partition_demo.start(token, live_leader_id()):
             raise HTTPException(409, "A demo is already running.")
     elif action == "reconnect":
         if not partition_demo.reconnect(token):
@@ -285,24 +297,23 @@ def logout(
     token = get_session_token(request)
 
     if token:
+        # Signed sessions are accepted by every node, so revoke the token
+        # on each reachable node.  Even if none is reachable, still remove
+        # the browser credentials.
+        def logout_on(address):
+            try:
+                app_address = read_status(address).app_address
+                if app_address:
+                    with grpc.insecure_channel(app_address) as channel:
+                        inventory_pb2_grpc.ClientServiceStub(channel).logout(
+                            inventory_pb2.LogoutRequest(token=token),
+                            timeout=5,
+                        )
+            except grpc.RpcError:
+                pass
 
-        stub = get_stub()
-
-        try:
-
-            stub.logout(
-                inventory_pb2.LogoutRequest(
-                    token=token,
-                ),
-                timeout=10,
-            )
-
-        except grpc.RpcError:
-
-            # Even if the Application Server is
-            # temporarily unavailable, remove
-            # the browser credentials.
-            pass
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            list(pool.map(logout_on, dict.fromkeys(RAFT_ADDRESSES)))
 
     response = RedirectResponse(
         "/login",
