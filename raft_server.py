@@ -5,10 +5,39 @@ from raft_node import RaftNode
 import argparse
 import threading
 import json
+import time
 from raft_replication import RaftLogStore, RequestIdConflict
 import database
 
 class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
+    # How long a client write waits for a background replication pass
+    # (heartbeat) to finish.  Kept below the application's shortest RPC
+    # timeout (TransferStock, 8 seconds).
+    REPLICATION_WAIT_SECONDS = 5
+
+    def replicate_new_entry(self):
+        """
+        Run a replication pass that includes a newly appended entry.
+
+        The heartbeat thread may already be replicating; then
+        replicate_logs() returns REPLICATION_ALREADY_RUNNING without trying.
+        With a crashed peer each heartbeat waits for that peer's RPC
+        timeout, so this happened to most writes and reported "no majority"
+        for entries that the next heartbeat then committed.  Wait for the
+        running pass to end and replicate again.  A pass that really runs
+        and still lacks a majority is returned unchanged.
+        """
+        deadline = time.monotonic() + self.REPLICATION_WAIT_SECONDS
+        lock = getattr(self.node, "replication_lock", None)
+        while True:
+            result = self.node.replicate_logs()
+            busy = isinstance(result, dict) and result.get("reason") == "REPLICATION_ALREADY_RUNNING"
+            remaining = deadline - time.monotonic()
+            if not busy or lock is None or remaining <= 0:
+                return result
+            if lock.acquire(timeout=remaining):
+                lock.release()
+
     def __init__(self, node, app_address):
         self.node = node
         self.app_address = app_address
@@ -224,7 +253,7 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
             entry = self.log_store.append_local_entry(term, kind, args, request_id)
         except RequestIdConflict:
             return reply(status="KEY_CONFLICT", message="This request key has already been used.")
-        self.node.replicate_logs()
+        self.replicate_new_entry()
         if self.log_store.get_state()["commit_index"] < entry["index"]:
             return reply(status="NO_QUORUM", message="Waiting for a majority. Retry the request.")
         self.log_store.apply_committed_entries()
@@ -262,7 +291,7 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
             return reply(status="KEY_CONFLICT", message="This transfer key already belongs to a different request.")
         except ValueError:
             return reply(status="RETRY", message="Leadership changed. Retry this transfer.")
-        self.node.replicate_logs()
+        self.replicate_new_entry()
         if self.log_store.get_state()["commit_index"] < entry["index"]:
             return reply(status="RETRY", message="Waiting for a majority. Retry this transfer.")
         self.log_store.apply_committed_entries()
@@ -346,7 +375,7 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
                 request_id=request_id
             )
 
-            replication_result = self.node.replicate_logs()
+            replication_result = self.replicate_new_entry()
 
         except Exception as exc:
             print(f"[RAFT ORDER] Replication error: {exc}", flush=True)
