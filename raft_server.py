@@ -226,14 +226,16 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
         reply = raft_pb2.SubmitCommandResponse
         kind = request.command_type
         key = request.idempotency_key.strip()
-        if not key or request.user_id <= 0 or kind not in ("CREATE_RESTOCK", "UPDATE_RESTOCK", "CHECKOUT_SHORTAGE"):
+        if not key or request.user_id <= 0 or kind not in ("CREATE_RESTOCK", "UPDATE_RESTOCK", "CHECKOUT_SHORTAGE", "UPDATE_DELIVERY"):
             return reply(status="INVALID_REQUEST", message="Invalid restock request.")
         try:
             data = json.loads(request.command_json)
             if not isinstance(data, dict):
                 raise ValueError()
             args = dict(user_id=request.user_id, note=str(data.get("note", "")))
-            if kind == "CHECKOUT_SHORTAGE":
+            if kind == "UPDATE_DELIVERY":
+                args.update(order_id=int(data["order_id"]), new_status=str(data["status"]))
+            elif kind == "CHECKOUT_SHORTAGE":
                 args = dict(user_id=request.user_id, item_id=str(data["item_id"]),
                             quantity=int(data["quantity"]), confirmed_shortage=int(data["confirmed_shortage"]))
             elif kind == "CREATE_RESTOCK":
@@ -242,6 +244,8 @@ class RaftServicer(raft_pb2_grpc.RaftServiceServicer):
                             idempotency_key=key)
             else:
                 args.update(restock_id=int(data["restock_id"]), new_status=str(data["status"]))
+                if isinstance(data.get("restock"), dict):
+                    args["restock"] = data["restock"]
         except (TypeError, KeyError, ValueError):
             return reply(status="INVALID_REQUEST", message="Invalid restock details.")
         with self.node.lock:

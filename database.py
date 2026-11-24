@@ -1698,6 +1698,23 @@ def update_restock_status(
     )
 
 
+RESTOCK_FINGERPRINT_FIELDS = ("item_id", "warehouse_id", "quantity", "created_at")
+
+
+def restock_fingerprint(conn, restock_id):
+    """
+    Fields that identify a restock request the same way on every node.
+
+    Request IDs are local AUTOINCREMENT values, so they can differ between
+    nodes; these values all come from the replicated log.
+    """
+    row = conn.execute(
+        "SELECT item_id, warehouse_id, quantity, created_at FROM restock_requests WHERE id = ?",
+        (restock_id,),
+    ).fetchone()
+    return None if row is None else {field: row[field] for field in RESTOCK_FINGERPRINT_FIELDS}
+
+
 def apply_update_restock_status(
     conn,
     restock_id: int,
@@ -1705,6 +1722,7 @@ def apply_update_restock_status(
     user_id: int,
     note: str = "",
     created_at: str | None = None,
+    restock: dict | None = None,
 ):
     """
     Move a restock request to its next status.
@@ -1712,6 +1730,10 @@ def apply_update_restock_status(
     Receiving a shipment adds the stock to the warehouse and to the product
     total in the same transaction.  Repeating the current status is
     accepted and changes nothing, so retried requests are safe.
+
+    ``restock`` is the request's fingerprint as the leader saw it.  When
+    given, it decides which request is updated, because the same ID may
+    name a different request on another node.
     """
     new_status = (new_status or "").strip().upper()
     note = (note or "").strip()[:500]
@@ -1743,6 +1765,22 @@ def apply_update_restock_status(
         """,
         (restock_id,),
     ).fetchone()
+
+    if isinstance(restock, dict) and all(field in restock for field in RESTOCK_FINGERPRINT_FIELDS):
+        if restock_fingerprint(conn, restock_id) != {f: restock[f] for f in RESTOCK_FINGERPRINT_FIELDS}:
+            match = conn.execute(
+                """
+                SELECT id FROM restock_requests
+                WHERE item_id = ? AND warehouse_id = ? AND quantity = ? AND created_at = ?
+                ORDER BY id LIMIT 1
+                """,
+                tuple(restock[f] for f in RESTOCK_FINGERPRINT_FIELDS),
+            ).fetchone()
+            request = None
+            if match is not None:
+                return apply_update_restock_status(
+                    conn, match["id"], new_status, user_id, note, created_at
+                )
 
     if request is None:
         return {
@@ -1983,13 +2021,34 @@ def update_delivery_status(
     new_status: str,
     user_id: int,
     note: str = "",
+    created_at: str | None = None,
+):
+    """Run ``apply_update_delivery_status`` in its own transaction (single-node use)."""
+    return run_in_transaction(
+        apply_update_delivery_status,
+        order_id=order_id,
+        new_status=new_status,
+        user_id=user_id,
+        note=note,
+        created_at=created_at,
+    )
+
+
+def apply_update_delivery_status(
+    conn,
+    order_id: int,
+    new_status: str,
+    user_id: int,
+    note: str = "",
+    created_at: str | None = None,
 ):
     """
     Move an order to its next delivery status.
 
     Cancelling an order that has not shipped yet returns its units to the
     warehouses they were taken from.  Repeating the current status is
-    accepted and changes nothing.
+    accepted and changes nothing.  The cluster applies this from the
+    replicated log, so every node sees the same delivery state and stock.
     """
     new_status = (new_status or "").strip().upper()
     note = (note or "").strip()[:500]
@@ -2001,93 +2060,77 @@ def update_delivery_status(
             "message": f"Unknown delivery status: {new_status or '(empty)'}.",
         }
 
-    conn = get_connection()
+    order = conn.execute(
+        """
+        SELECT id, item_id, quantity, status, delivery_status
+        FROM orders
+        WHERE id = ?
+        """,
+        (order_id,),
+    ).fetchone()
 
-    try:
-        conn.execute("BEGIN IMMEDIATE")
+    if order is None:
+        return {
+            "success": False,
+            "status": "ORDER_NOT_FOUND",
+            "message": f"Order #{order_id} does not exist.",
+        }
 
-        order = conn.execute(
-            """
-            SELECT id, item_id, quantity, status, delivery_status
-            FROM orders
-            WHERE id = ?
-            """,
-            (order_id,),
-        ).fetchone()
+    current_status = order["delivery_status"]
 
-        if order is None:
-            conn.rollback()
-            return {
-                "success": False,
-                "status": "ORDER_NOT_FOUND",
-                "message": f"Order #{order_id} does not exist.",
-            }
-
-        current_status = order["delivery_status"]
-
-        if current_status == new_status:
-            conn.rollback()
-            return {
-                "success": True,
-                "status": "SUCCESS",
-                "message": f"Order #{order_id} is already {new_status}.",
-            }
-
-        if new_status not in DELIVERY_TRANSITIONS.get(current_status, set()):
-            conn.rollback()
-            return {
-                "success": False,
-                "status": "INVALID_TRANSITION",
-                "message": (
-                    f"Order #{order_id} cannot move from "
-                    f"{current_status} to {new_status}."
-                ),
-            }
-
-        now = utc_now()
-
-        if new_status == "CANCELLED" and order["status"] == "SUCCESS":
-            _return_order_stock(conn, order)
-
-        conn.execute(
-            """
-            UPDATE orders
-            SET delivery_status = ?
-            WHERE id = ?
-            """,
-            (new_status, order_id),
-        )
-
-        conn.execute(
-            """
-            INSERT INTO delivery_events
-                (order_id, status, note, updated_by, created_at)
-            VALUES
-                (?, ?, ?, ?, ?)
-            """,
-            (order_id, new_status, note, user_id, now),
-        )
-
-        conn.commit()
-
-        message = f"Order #{order_id} is now {new_status.replace('_', ' ')}."
-
-        if new_status == "CANCELLED":
-            message += f" {order['quantity']} units returned to stock."
-
+    if current_status == new_status:
         return {
             "success": True,
             "status": "SUCCESS",
-            "message": message,
-            "stock_changed": new_status == "CANCELLED",
+            "message": f"Order #{order_id} is already {new_status}.",
         }
 
-    except Exception:
-        conn.rollback()
-        raise
+    if new_status not in DELIVERY_TRANSITIONS.get(current_status, set()):
+        return {
+            "success": False,
+            "status": "INVALID_TRANSITION",
+            "message": (
+                f"Order #{order_id} cannot move from "
+                f"{current_status} to {new_status}."
+            ),
+        }
 
-    finally:
-        conn.close()
+    now = created_at or utc_now()
+
+    if new_status == "CANCELLED" and order["status"] == "SUCCESS":
+        _return_order_stock(conn, order)
+
+    conn.execute(
+        """
+        UPDATE orders
+        SET delivery_status = ?
+        WHERE id = ?
+        """,
+        (new_status, order_id),
+    )
+
+    conn.execute(
+        """
+        INSERT INTO delivery_events
+            (order_id, status, note, updated_by, created_at)
+        VALUES
+            (?, ?, ?, ?, ?)
+        """,
+        (order_id, new_status, note, user_id, now),
+    )
+
+
+    message = f"Order #{order_id} is now {new_status.replace('_', ' ')}."
+
+    if new_status == "CANCELLED":
+        message += f" {order['quantity']} units returned to stock."
+
+    return {
+        "success": True,
+        "status": "SUCCESS",
+        "message": message,
+        "stock_changed": new_status == "CANCELLED",
+    }
 
 
 def _return_order_stock(conn, order):
