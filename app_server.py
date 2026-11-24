@@ -605,16 +605,23 @@ class ClientServiceServicer(
                 "Restock update must contain 'restock_id' and 'status'."
             )
 
-        result = self._replicate(
-            user_id,
-            "UPDATE_RESTOCK",
-            {
-                "restock_id": restock_id,
-                "status": new_status,
-                "note": str(data.get("note", "")),
-            },
-            key,
-        )
+        # Restock IDs are local to each node; the fingerprint lets every
+        # node update the same request.
+        conn = database.get_connection()
+        try:
+            fingerprint = database.restock_fingerprint(conn, restock_id)
+        finally:
+            conn.close()
+
+        command = {
+            "restock_id": restock_id,
+            "status": new_status,
+            "note": str(data.get("note", "")),
+        }
+        if fingerprint is not None:
+            command["restock"] = fingerprint
+
+        result = self._replicate(user_id, "UPDATE_RESTOCK", command, key)
 
         print(
             f"[RESTOCK] user={user_id} request={restock_id} "
@@ -633,11 +640,17 @@ class ClientServiceServicer(
                 "Delivery update must contain 'order_id' and 'status'."
             )
 
-        result = database.update_delivery_status(
-            order_id=order_id,
-            new_status=new_status,
-            user_id=user_id,
-            note=str(data.get("note", "")),
+        # Replicated so every node keeps the same delivery state, and a
+        # cancellation returns stock on all of them.
+        result = self._replicate(
+            user_id,
+            "UPDATE_DELIVERY",
+            {
+                "order_id": order_id,
+                "status": new_status,
+                "note": str(data.get("note", "")),
+            },
+            key,
         )
 
         print(

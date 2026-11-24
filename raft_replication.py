@@ -882,11 +882,12 @@ class RaftLogStore:
                 request_id = entry["request_id"]
                 if entry["command_type"] == "TRANSFER_STOCK":
                     result_status = self._apply_transfer(conn, entry)
-                elif entry["command_type"] in ("CREATE_RESTOCK", "UPDATE_RESTOCK", "CHECKOUT_SHORTAGE"):
+                elif entry["command_type"] in ("CREATE_RESTOCK", "UPDATE_RESTOCK", "CHECKOUT_SHORTAGE", "UPDATE_DELIVERY"):
                     apply = {
                         "CREATE_RESTOCK": database.apply_create_restock_request,
                         "UPDATE_RESTOCK": database.apply_update_restock_status,
                         "CHECKOUT_SHORTAGE": database.apply_checkout_shortage,
+                        "UPDATE_DELIVERY": database.apply_update_delivery_status,
                     }[entry["command_type"]]
                     result = apply(conn, **entry["command"], created_at=entry["created_at"])
                     conn.execute("INSERT INTO restock_command_results VALUES (?,?)",

@@ -10,7 +10,7 @@ MODULES = [
     'test_order_forecast_history', 'test_dashboard_optimization',
     'test_cluster_monitor', 'test_warehouse_rpc', 'test_partition_demo',
     'test_raft_persistence', 'test_raft_request_vote', 'test_local_election',
-    'test_replication_wait',
+    'test_replication_wait', 'test_replica_consistency',
 ]
 
 if __name__ == '__main__':
